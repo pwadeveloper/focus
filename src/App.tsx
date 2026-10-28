@@ -9,6 +9,7 @@ import {
 import {
   loadSettings,
   saveSettings,
+  markTypewriterChosen,
   loadDocumentsSync,
   loadActiveDocIdSync,
   saveActiveDocIdSync,
@@ -120,6 +121,7 @@ export const App: React.FC = () => {
   }, [settings.theme]);
 
   const updateSettings = useCallback((partial: Partial<WriterSettings>) => {
+    if ('typewriterMode' in partial) markTypewriterChosen();
     setSettings((prev) => {
       const next = { ...prev, ...partial };
       saveSettings(next);
