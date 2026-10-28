@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { db, toNumber } from './_lib/db.js';
-import { requireMember, requireOwner, requireRoomAccess, requireWriter, type Writer } from './_lib/auth.js';
+import {
+  personalUnlocked,
+  requireMember,
+  requireOwner,
+  requireRoomAccess,
+  requireWriter,
+  type Writer,
+} from './_lib/auth.js';
 import { HttpError, assertSameOrigin, cleanText, handle, json, readJson, requireUuid } from './_lib/http.js';
 import { cleanMeta, sceneRecords, toSceneRow } from './_lib/scenes.js';
 import type { LibraryResponse, RoomScript, SceneData, ScriptMeta } from './_lib/types.js';
@@ -29,7 +36,7 @@ async function loadScripts(me: Writer, scriptId?: string): Promise<RoomScript[]>
         join room_members m on m.room_id = s.room_id and m.writer_id = ${me.id}
         join rooms r on r.id = s.room_id
         where (${onlyOne}::uuid is null or s.id = ${onlyOne}::uuid)
-          and (r.personal or ${me.roomVerified}::boolean)
+          and (${me.roomVerified}::boolean or (r.personal and ${personalUnlocked(me)}::boolean))
         order by s.updated_at desc
       `,
       sql`
@@ -39,7 +46,7 @@ async function loadScripts(me: Writer, scriptId?: string): Promise<RoomScript[]>
         join room_members m on m.room_id = s.room_id and m.writer_id = ${me.id}
         join rooms r on r.id = s.room_id
         where not c.deleted and (${onlyOne}::uuid is null or c.script_id = ${onlyOne}::uuid)
-          and (r.personal or ${me.roomVerified}::boolean)
+          and (${me.roomVerified}::boolean or (r.personal and ${personalUnlocked(me)}::boolean))
         order by c.script_id, c.position, c.updated_at, c.id
       `,
     ],
@@ -68,7 +75,7 @@ export function GET(request: Request) {
         ? []
         : await db()`
             select r.id from room_members m join rooms r on r.id = m.room_id
-            where m.writer_id = ${me.id} and not r.personal
+            where m.writer_id = ${me.id} and (not r.personal or not ${personalUnlocked(me)}::boolean)
           `;
       const library: LibraryResponse = {
         scripts: await loadScripts(me),

@@ -5,7 +5,7 @@ import type { DocumentItem } from '../types';
 import type { DevicePasskey, RoomDetails, RoomScript, SessionResponse } from '../../api/_lib/types';
 import { needsDeviceCheck, roomApi } from '../room/api';
 import { documentMeta, unitToScene } from '../room/convert';
-import { addThisDevice, confirmWithDevice, unlockRooms } from '../room/devicePasskey';
+import { addThisDevice, confirmWithDevice, deviceChecksSupported, unlockRooms } from '../room/devicePasskey';
 import { downloadFile } from '../editorUtils';
 import { WriterAvatar } from './WriterAvatar';
 import { canHover, prefersReducedMotion } from '../motion';
@@ -155,6 +155,8 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
   const [details, setDetails] = useState<RoomDetails | null>(null);
   /** The room view is waiting for Face ID / Touch ID on this device */
   const [roomLocked, setRoomLocked] = useState(false);
+  /** Right after a new account: offer to protect it with Face ID / Touch ID */
+  const [offerDeviceSetup, setOfferDeviceSetup] = useState(false);
   const [devices, setDevices] = useState<DevicePasskey[] | null>(null);
 
   const personalRoom = account?.rooms.find((r) => r.personal);
@@ -587,14 +589,71 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
                 <Download className="size-4" />
                 Download as a file
               </button>
-              <button type="button" onClick={() => setNewSecrets(null)} style={inkFill} className={`${primaryButtonClass} flex-1`}>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewSecrets(null);
+                  if (account.security.devicePasskeys === 0 && deviceChecksSupported()) setOfferDeviceSetup(true);
+                }}
+                style={inkFill}
+                className={`${primaryButtonClass} flex-1`}
+              >
                 I’ve saved them
               </button>
             </div>
           </div>
         )}
 
-        {account && !newSecrets && (
+        {/* Protect a new account straight away */}
+        {account && !newSecrets && offerDeviceSetup && (
+          <div className="px-5 pb-5 sm:px-6">
+            <div style={surface} className="rounded-xl p-4">
+              <div className="flex items-start gap-3">
+                <KeyRound className="mt-0.5 size-4 shrink-0 text-[var(--ink-2)]" />
+                <div className="min-w-0">
+                  <h3 className="text-[13px] font-semibold text-[var(--ink-1)]">Protect your scripts with Face ID or Touch ID</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-[var(--ink-2)]">
+                    Then a passkey alone can’t open your scripts or writers rooms: each new device also asks for Face
+                    ID, Touch ID, your screen lock or a security key. Your phone can confirm for a computer by QR code.
+                  </p>
+                  {error && (
+                    <p role="alert" className="mt-2 text-xs leading-relaxed text-[var(--accent)]">
+                      {error}
+                    </p>
+                  )}
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        run('setup-device', async () => {
+                          onAccount(await addThisDevice());
+                          setOfferDeviceSetup(false);
+                        })
+                      }
+                      disabled={busy !== null}
+                      style={inkFill}
+                      className={smallPrimaryClass}
+                    >
+                      {busy === 'setup-device' ? 'Waiting for your device…' : 'Set it up now'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOfferDeviceSetup(false);
+                        setError(null);
+                      }}
+                      className={quietButtonClass}
+                    >
+                      Not now
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {account && !newSecrets && !offerDeviceSetup && (
           <div className="space-y-6 px-5 pb-5 sm:px-6">
             {error && errorSource !== 'create-room' && errorSource !== 'join-room' && (
               <p role="alert" className="text-xs leading-relaxed text-[var(--accent)]">
@@ -606,7 +665,30 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
               <>
                 <section>
                   <h3 className={`mb-1 ${sectionHeadingClass}`}>Your scripts</h3>
-                  {!personalDetails ? (
+                  {roomLocked ? (
+                    <div style={surface} className="flex items-start gap-3 rounded-xl p-3.5">
+                      <Lock className="mt-0.5 size-4 shrink-0 text-[var(--ink-2)]" />
+                      <div className="min-w-0">
+                        <p className="text-xs leading-relaxed text-[var(--ink-2)]">
+                          Confirm it’s you to bring your scripts to this device. Use Face ID, Touch ID, your screen
+                          lock or security key, or choose your phone in the prompt and scan the QR code.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            run('unlock', async () => {
+                              onAccount(await confirmWithDevice());
+                            })
+                          }
+                          disabled={busy !== null}
+                          style={inkFill}
+                          className={`${smallPrimaryClass} mt-2.5`}
+                        >
+                          {busy === 'unlock' ? 'Waiting for your device…' : 'Confirm it’s you'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : !personalDetails ? (
                     <p className={`py-2 ${hintClass}`}>Loading…</p>
                   ) : personalDetails.scripts.length === 0 ? (
                     <p className={`py-2 ${hintClass}`}>
@@ -950,8 +1032,10 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
                     </button>
                   </div>
                   <p className={`mb-1 ${hintClass}`}>
-                    Writers rooms ask for Face ID, Touch ID, Windows Hello or a security key on each device, so a
-                    passkey alone can’t get into them. Your phone can confirm for a computer by scanning a QR code.
+                    {devices && devices.length === 0
+                      ? 'Add one so a passkey alone can’t open your scripts. Writers rooms need it too.'
+                      : 'Your scripts and writers rooms ask for one of these on each new device, so a passkey alone can’t open them.'}{' '}
+                    Your phone can confirm for a computer by scanning a QR code.
                   </p>
                   {devices && devices.length > 0 && (
                     <ul className="divide-y divide-[var(--border-subtle)]">

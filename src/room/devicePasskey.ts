@@ -51,6 +51,9 @@ function friendly(error: unknown): Error {
   return error instanceof Error ? error : new Error('Your device couldn’t finish. Try again.');
 }
 
+/** Whether this browser can use Face ID, Touch ID, a screen lock or a security key. */
+export const deviceChecksSupported = () => browserSupportsWebAuthn();
+
 function assertSupported() {
   if (!browserSupportsWebAuthn()) {
     throw new Error('This browser can’t use Face ID, Touch ID or security keys. Try a recent Chrome, Safari, Edge or Firefox.');

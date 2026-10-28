@@ -40,11 +40,24 @@ export const CLIENT_ID = (() => {
 
 const ACCOUNT_KEY = 'focus:account';
 
+/** A session with everything this version reads (older versions saved less). */
+const isSession = (value: unknown): value is SessionResponse => {
+  const session = value as Partial<SessionResponse> | null;
+  return (
+    typeof session?.me?.id === 'string' &&
+    Array.isArray(session.rooms) &&
+    typeof session.security?.devicePasskeys === 'number' &&
+    typeof session.security?.roomVerified === 'boolean'
+  );
+};
+
 /** The last known session, so synced scripts stay usable offline. */
 export function loadCachedSession(): SessionResponse | null {
   try {
     const raw = localStorage.getItem(ACCOUNT_KEY);
-    return raw ? (JSON.parse(raw) as SessionResponse) : null;
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    // A session saved by an older version is refreshed from the server instead
+    return isSession(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -77,6 +90,10 @@ async function call<T>(path: string, body?: unknown, keepalive = false): Promise
   } catch {
     throw new RoomApiError(0, 'Can’t reach Focus. Check your connection.');
   }
+  // Anything but JSON (an offline page, a misrouted request) means the API isn't there
+  if (!res.headers.get('content-type')?.includes('application/json')) {
+    throw new RoomApiError(0, 'Can’t reach Focus. Check your connection.');
+  }
   const data = (await res.json().catch(() => ({}))) as T & { error?: string; code?: string };
   if (!res.ok) {
     throw new RoomApiError(res.status, data?.error ?? 'Something went wrong. Try again.', data?.code);
@@ -86,7 +103,11 @@ async function call<T>(path: string, body?: unknown, keepalive = false): Promise
 
 export const roomApi = {
   /** The signed-in writer, or null. */
-  session: () => call<SessionResponse | null>('/api/auth'),
+  session: async () => {
+    const session = await call<unknown>('/api/auth');
+    if (session !== null && !isSession(session)) throw new RoomApiError(0, 'Can’t reach Focus. Check your connection.');
+    return session;
+  },
   createAccount: (name: string) => call<SessionResponse>('/api/auth', { action: 'create-account', name }),
   signIn: (name: string, passkey: string) =>
     call<SessionResponse>('/api/auth', { action: 'sign-in', name, passkey }),

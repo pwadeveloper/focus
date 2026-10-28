@@ -41,6 +41,7 @@ import { NewWorkModal } from './components/NewWorkModal';
 import { BottomHud } from './components/BottomHud';
 import { ShortcutsModal } from './components/ShortcutsModal';
 import { WelcomeHome } from './components/WelcomeHome';
+import { UpdateToast } from './components/UpdateToast';
 import { WritersRoomDialog } from './components/WritersRoomDialog';
 import { WriterAvatar } from './components/WriterAvatar';
 import { CLIENT_ID, loadCachedSession, roomApi, saveCachedSession } from './room/api';
@@ -552,9 +553,11 @@ export const App: React.FC = () => {
   // Signed in, every script on this device is saved to the writer's account
   // (except the sample). The document keeps its id, so the editor isn't disturbed.
   const personalRoomId = account?.rooms.find((r) => r.personal)?.id;
+  // Once Face ID / Touch ID is set up, this device must confirm before saving to the account
+  const personalLocked = !!account && account.security.devicePasskeys > 0 && !account.security.roomVerified;
   const uploadAttemptsRef = useRef(new Map<string, number>());
   useEffect(() => {
-    if (!personalRoomId) return;
+    if (!personalRoomId || personalLocked) return;
     for (const doc of documents) {
       if (doc.room || doc.id === STARTER_SCREENPLAY.id) continue;
       const lastAttempt = uploadAttemptsRef.current.get(doc.id);
@@ -575,7 +578,7 @@ export const App: React.FC = () => {
         })
         .catch(() => {});
     }
-  }, [documents, personalRoomId, persistDocs]);
+  }, [documents, personalRoomId, personalLocked, persistDocs]);
 
   const handleOpenRoomScript = useCallback(
     (script: RoomScript) => {
@@ -704,7 +707,9 @@ export const App: React.FC = () => {
     } else if (syncStatus === 'locked') {
       editorNotice = (
         <span className="min-w-0">
-          Writers rooms ask for Face ID, Touch ID or your device’s screen lock on each device.{' '}
+          {docMembership?.personal
+            ? 'Your scripts ask for Face ID, Touch ID or your device’s screen lock on each device.'
+            : 'Writers rooms ask for Face ID, Touch ID or your device’s screen lock on each device.'}{' '}
           <button type="button" onClick={handleUnlockRooms} className={linkClass}>
             {account.security.devicePasskeys > 0 ? 'Confirm it’s you' : 'Set it up on this device'}
           </button>
@@ -1110,6 +1115,8 @@ export const App: React.FC = () => {
         onOpenScript={handleOpenRoomScript}
         onScriptDeleted={(scriptId) => dropRoomDocuments(scriptId)}
       />
+
+      <UpdateToast />
 
       <ShortcutsModal
         open={shortcutsOpen}

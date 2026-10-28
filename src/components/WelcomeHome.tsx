@@ -1,10 +1,11 @@
 import React, { useLayoutEffect, useRef } from 'react';
 import gsap from 'gsap';
-import { ArrowRight, ArrowUpRight, Plus } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, MonitorDown, Plus } from 'lucide-react';
 import filmSchoolLogo from '../assets/filmschool-africa-logo.png';
 import { FocusWordmark } from './FocusLogo';
 import { modKeys } from '../screenplay';
 import { prefersReducedMotion } from '../motion';
+import { installApp, isInstalled, isIosBrowser, usePwa } from '../pwa';
 
 interface WelcomeHomeProps {
   /** Title of the script that the secondary action opens. */
@@ -27,6 +28,8 @@ export const WelcomeHome: React.FC<WelcomeHomeProps> = ({
   onContinue,
   onOpenWritersRoom,
 }) => {
+  const { canInstall } = usePwa();
+  const showIosHint = !canInstall && isIosBrowser() && !isInstalled();
   const contentRef = useRef<HTMLDivElement>(null);
   const { mod } = modKeys();
 
@@ -114,6 +117,23 @@ export const WelcomeHome: React.FC<WelcomeHomeProps> = ({
               Get a passkey or sign in
             </button>
           </p>
+          {canInstall && (
+            <button
+              data-welcome-item
+              type="button"
+              onClick={() => void installApp()}
+              className="mt-3 flex items-center gap-1.5 text-[13px] font-medium text-[var(--ink-2)] transition-colors hover:text-[var(--ink-1)]"
+            >
+              <MonitorDown className="size-4" />
+              Install Focus as an app on this device
+            </button>
+          )}
+          {showIosHint && (
+            <p data-welcome-item className="mt-3 text-[13px] leading-relaxed text-[var(--ink-3)]">
+              To install Focus as an app, tap Share, then{' '}
+              <span className="font-medium text-[var(--ink-2)]">Add to Home Screen</span>.
+            </p>
+          )}
 
           <dl data-welcome-item className="mt-10 space-y-2">
             {quickStart.map((row) => (

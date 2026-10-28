@@ -187,9 +187,21 @@ export async function requireMember(writer: Writer, roomId: string): Promise<Mem
 }
 
 /** Shared rooms need a recent device passkey confirmation on this device. */
+/**
+ * Shared rooms need a recent device passkey confirmation on this device.
+ * So do the writer's own scripts once they have added a device passkey;
+ * until then their passkey alone opens them (some devices can't do Face ID).
+ */
 export function requireRoomAccess(writer: Writer, member: MemberOf): void {
-  if (!member.personal) requireDeviceCheck(writer, 'Confirm it’s you with Face ID, Touch ID or your device’s screen lock to open this writers room.');
+  if (!member.personal) {
+    requireDeviceCheck(writer, 'Confirm it’s you with Face ID, Touch ID or your device’s screen lock to open this writers room.');
+  } else if (writer.devicePasskeys > 0) {
+    requireDeviceCheck(writer, 'Confirm it’s you with Face ID, Touch ID or your device’s screen lock to open your scripts on this device.');
+  }
 }
+
+/** Whether this session can open the writer's own scripts. */
+export const personalUnlocked = (writer: Writer) => writer.roomVerified || writer.devicePasskeys === 0;
 
 /** Writers who added device passkeys must confirm with one for sensitive changes. */
 export function requireDeviceCheck(writer: Writer, message: string): void {

@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite';
 import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 /**
@@ -56,6 +57,55 @@ export default defineConfig(({ mode }) => {
     process.env[key] ??= value;
   }
   return {
-    plugins: [react(), vercelFunctions()],
+    plugins: [
+      react(),
+      vercelFunctions(),
+      // Installable app: manifest, icons, and a service worker that keeps the
+      // app itself available offline. The API is never cached.
+      VitePWA({
+        registerType: 'prompt',
+        injectRegister: false,
+        includeAssets: ['favicon.svg', 'favicon.ico', 'apple-touch-icon.png'],
+        manifest: {
+          id: '/',
+          name: 'Focus — Distraction-Free Screenwriting',
+          short_name: 'Focus',
+          description: 'A quiet place to write for the screen. Powered by filmschool.Africa.',
+          start_url: '/',
+          scope: '/',
+          display: 'standalone',
+          background_color: '#F6F2EA',
+          theme_color: '#F6F2EA',
+          categories: ['productivity', 'education'],
+          icons: [
+            { src: '/pwa-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+            { src: '/pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+            { src: '/pwa-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ],
+        },
+        workbox: {
+          globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
+          navigateFallback: '/index.html',
+          navigateFallbackDenylist: [/^\/api\//],
+          cleanupOutdatedCaches: true,
+          runtimeCaching: [
+            {
+              urlPattern: /^https:\/\/fonts\.googleapis\.com\//,
+              handler: 'StaleWhileRevalidate',
+              options: { cacheName: 'google-fonts-stylesheets' },
+            },
+            {
+              urlPattern: /^https:\/\/fonts\.gstatic\.com\//,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'google-fonts-webfonts',
+                expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
+          ],
+        },
+      }),
+    ],
   };
 });
