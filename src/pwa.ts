@@ -4,7 +4,7 @@ import { registerSW } from 'virtual:pwa-register';
 /**
  * Installable app support: registers the service worker, notices when a new
  * version is ready (without reloading in the middle of a scene), and keeps
- * the browser's install prompt for an "Install Focus" button.
+ * the browser's install prompt for the Install app button.
  */
 
 interface BeforeInstallPromptEvent extends Event {
@@ -14,7 +14,9 @@ interface BeforeInstallPromptEvent extends Event {
 
 let state = {
   updateReady: false,
+  /** The browser offered an install prompt we can open from a button */
   canInstall: false,
+  installed: false,
 };
 let updateServiceWorker: ((reload?: boolean) => Promise<void>) | null = null;
 let installPrompt: BeforeInstallPromptEvent | null = null;
@@ -40,15 +42,16 @@ export function startPwa() {
     },
   });
 
+  setState({ installed: isInstalled() });
+  // Not prevented, so Chrome on Android still shows its own install banner;
+  // the saved event also powers the Install app button
   window.addEventListener('beforeinstallprompt', (event) => {
-    // Keep it for the Install button instead of the browser's own banner
-    event.preventDefault();
     installPrompt = event as BeforeInstallPromptEvent;
     setState({ canInstall: true });
   });
   window.addEventListener('appinstalled', () => {
     installPrompt = null;
-    setState({ canInstall: false });
+    setState({ canInstall: false, installed: true });
   });
 }
 
@@ -58,12 +61,20 @@ export const usePwa = () => useSyncExternalStore(subscribe, () => state);
 export const applyUpdate = () => updateServiceWorker?.(true);
 export const dismissUpdate = () => setState({ updateReady: false });
 
-export async function installApp() {
-  if (!installPrompt) return;
-  await installPrompt.prompt();
-  await installPrompt.userChoice.catch(() => undefined);
-  installPrompt = null;
-  setState({ canInstall: false });
+/** Opens the browser's install prompt; false when it can't (show the steps instead). */
+export async function installApp(): Promise<boolean> {
+  if (!installPrompt) return false;
+  try {
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice.catch(() => undefined);
+    installPrompt = null;
+    setState({ canInstall: false, installed: choice?.outcome === 'accepted' || state.installed });
+    return true;
+  } catch {
+    installPrompt = null;
+    setState({ canInstall: false });
+    return false;
+  }
 }
 
 /** Already running as an installed app. */
@@ -75,3 +86,16 @@ export const isInstalled = () =>
 export const isIosBrowser = () =>
   /iPhone|iPad|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+export type InstallPlatform = 'ios' | 'android' | 'chromium' | 'mac-safari' | 'firefox' | 'other';
+
+/** Which install steps to show for this browser. */
+export function installPlatform(): InstallPlatform {
+  const ua = navigator.userAgent;
+  if (isIosBrowser()) return 'ios';
+  if (/Android/.test(ua)) return 'android';
+  if (/Firefox\//.test(ua)) return 'firefox';
+  if (/Edg\/|Chrome\/|Chromium\//.test(ua)) return 'chromium';
+  if (/Macintosh/.test(ua) && /Safari\//.test(ua)) return 'mac-safari';
+  return 'other';
+}

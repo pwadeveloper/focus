@@ -42,6 +42,9 @@ import { BottomHud } from './components/BottomHud';
 import { ShortcutsModal } from './components/ShortcutsModal';
 import { WelcomeHome } from './components/WelcomeHome';
 import { UpdateToast } from './components/UpdateToast';
+import { InstallAppDialog } from './components/InstallAppDialog';
+import { InstallBanner } from './components/InstallBanner';
+import { installApp, usePwa } from './pwa';
 import { WritersRoomDialog } from './components/WritersRoomDialog';
 import { WriterAvatar } from './components/WriterAvatar';
 import { CLIENT_ID, loadCachedSession, roomApi, saveCachedSession } from './room/api';
@@ -71,6 +74,14 @@ export const App: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved');
   const [account, setAccount] = useState<SessionResponse | null>(() => loadCachedSession());
   const [writersRoomOpen, setWritersRoomOpen] = useState(false);
+  const [installOpen, setInstallOpen] = useState(false);
+  const { installed } = usePwa();
+  // The browser's own install prompt when it offers one, otherwise the steps
+  const handleInstall = useCallback(() => {
+    void installApp().then((opened) => {
+      if (!opened) setInstallOpen(true);
+    });
+  }, []);
 
   const lastPointerPos = useRef<{ x: number; y: number } | null>(null);
   const saveTimerRef = useRef<number | null>(null);
@@ -915,6 +926,7 @@ export const App: React.FC = () => {
           onStartNew={handleOpenNewWorkModal}
           onContinue={handleLeaveHome}
           onOpenWritersRoom={() => setWritersRoomOpen(true)}
+          onInstall={handleInstall}
         />
       ) : (
         <>
@@ -931,6 +943,7 @@ export const App: React.FC = () => {
             account={accountBadge}
             collaborators={activeDoc.room ? roomCollaborators : undefined}
             statusLabel={syncLabel}
+            onInstallApp={installed ? undefined : handleInstall}
             isTyping={isTyping && viewMode === 'write'}
             sidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -1117,6 +1130,9 @@ export const App: React.FC = () => {
       />
 
       <UpdateToast />
+      {/* Not on the home page (it has its own link) and never while writing */}
+      <InstallBanner hidden={showHome || isTyping || installOpen} onInstall={handleInstall} />
+      <InstallAppDialog open={installOpen} onClose={() => setInstallOpen(false)} />
 
       <ShortcutsModal
         open={shortcutsOpen}

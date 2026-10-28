@@ -21,6 +21,7 @@ import {
   GitCommitHorizontal,
   CircleHelp,
   KeyRound,
+  MonitorDown,
 } from 'lucide-react';
 import {
   FocusMode,
@@ -50,6 +51,8 @@ interface TopBarProps {
   collaborators?: { writer: RoomWriter; where: string }[];
   /** Replaces Saved/Saving for synced scripts, e.g. "Synced" or "Offline" */
   statusLabel?: string;
+  /** Shown until Focus is installed as an app */
+  onInstallApp?: () => void;
   isTyping: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
@@ -81,6 +84,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   account,
   collaborators,
   statusLabel,
+  onInstallApp,
   isTyping,
   sidebarOpen,
   onToggleSidebar,
@@ -220,14 +224,14 @@ export const TopBar: React.FC<TopBarProps> = ({
       className="no-print fixed inset-x-0 top-0 flex min-h-14 items-center justify-between px-3 backdrop-blur-md sm:px-6"
     >
       {/* Left: Drawer Trigger + Format Badge + Document Breadcrumb + New Script */}
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 items-center gap-1 sm:gap-2">
         <button
           type="button"
           onClick={onOpenHome}
           {...btnHover}
           aria-label="Home"
           title="Home"
-          className="relative flex size-9 items-center justify-center rounded-lg text-[var(--ink-2)] transition-colors duration-150 ease-out before:absolute before:-inset-1 hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)]"
+          className="relative flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--ink-2)] transition-colors duration-150 ease-out before:absolute before:-inset-1 hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)] sm:size-9"
         >
           <FocusMark className="h-[18px] w-auto" />
         </button>
@@ -238,7 +242,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           {...btnHover}
           aria-label={sidebarOpen ? 'Hide scripts (⌘\\)' : 'Show scripts (⌘\\)'}
           title="Script Library (⌘\)"
-          className="relative flex size-9 items-center justify-center rounded-lg text-[var(--ink-2)] transition-colors duration-150 ease-out before:absolute before:-inset-1 hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)]"
+          className="relative flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--ink-2)] transition-colors duration-150 ease-out before:absolute before:-inset-1 hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)] sm:size-9"
         >
           <PanelLeft className="size-4" strokeWidth={1.8} />
         </button>
@@ -278,6 +282,20 @@ export const TopBar: React.FC<TopBarProps> = ({
             </>
           )}
         </button>
+
+        {onInstallApp && (
+          <button
+            type="button"
+            onClick={onInstallApp}
+            {...btnHover}
+            aria-label="Install Focus as an app"
+            title="Install Focus as an app"
+            className="relative flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-[var(--ink-2)] transition-colors duration-150 ease-out before:absolute before:-inset-1 hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)]"
+          >
+            <MonitorDown className="size-3.5" strokeWidth={1.8} />
+            <span className="hidden lg:inline">Install app</span>
+          </button>
+        )}
 
         <div
           className="mx-0.5 h-4"
@@ -376,7 +394,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             backgroundColor:
               viewMode === 'cabinet' ? 'var(--ink-1)' : 'var(--bg-surface)',
           }}
-          className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors duration-150 ease-out"
+          className="hidden h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors duration-150 ease-out sm:flex"
         >
           <Archive
             className={`size-3.5 ${
@@ -407,7 +425,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             {viewMode === 'birdseye' ? (
               <>
                 <PenLine className="size-3.5" strokeWidth={1.85} />
-                <span>Write</span>
+                <span className="hidden sm:inline">Write</span>
               </>
             ) : (
               <>
@@ -415,13 +433,13 @@ export const TopBar: React.FC<TopBarProps> = ({
                   className="size-3.5 text-[var(--accent)]"
                   strokeWidth={1.85}
                 />
-                <span>Timeline</span>
+                <span className="hidden sm:inline">Timeline</span>
               </>
             )}
           </button>
 
           <div
-            className="mx-0.5 h-4"
+            className="mx-0.5 hidden h-4 sm:block"
             style={{
               width: 'var(--border-hairline)',
               backgroundColor: 'var(--border-subtle)',
@@ -464,7 +482,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                 ? 'var(--accent-soft)'
                 : 'transparent',
             }}
-            className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors duration-150 ease-out hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)]"
+            className="hidden h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors duration-150 ease-out hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)] sm:flex"
           >
             <AlignCenterHorizontal className="size-3.5" strokeWidth={1.85} />
             <span className="hidden md:inline">Typewriter</span>
