@@ -7,21 +7,25 @@ import {
   findWriter,
   generateInviteCode,
   generatePasskey,
+  generateRecoveryCode,
   hashPasskey,
+  hashRecoveryCode,
+  newWriter,
   normalizeCode,
+  requireDeviceCheck,
   requireWriter,
   sessionPayload,
-  type Writer,
 } from './_lib/auth.js';
 import { HttpError, assertSameOrigin, cleanText, handle, json, readJson } from './_lib/http.js';
 import { MAX_WRITERS_PER_ROOM } from './_lib/types.js';
 
 interface AuthBody {
-  action: 'create-account' | 'create-room' | 'join' | 'sign-in' | 'sign-out' | 'new-passkey';
+  action: 'create-account' | 'create-room' | 'join' | 'sign-in' | 'recover' | 'sign-out' | 'new-passkey';
   name: string;
   roomName: string;
   inviteCode: string;
   passkey: string;
+  recoveryCode: string;
 }
 
 const requireName = (value: unknown) => {
@@ -30,15 +34,21 @@ const requireName = (value: unknown) => {
   return name;
 };
 
+/** A new passkey and recovery code, shown to the writer once. */
+const newSecrets = () => ({ passkey: generatePasskey(), recoveryCode: generateRecoveryCode() });
+
 /** Statements creating a writer and their personal room, for one transaction. */
-function accountStatements(name: string, passkey: string) {
+function accountStatements(name: string, secrets: { passkey: string; recoveryCode: string }) {
   const sql = db();
   const writerId = randomUUID();
   const roomId = randomUUID();
   return {
     writerId,
     statements: [
-      sql`insert into writers (id, name, passkey_hash) values (${writerId}, ${name}, ${hashPasskey(passkey)})`,
+      sql`
+        insert into writers (id, name, passkey_hash, recovery_hash)
+        values (${writerId}, ${name}, ${hashPasskey(secrets.passkey)}, ${hashRecoveryCode(secrets.recoveryCode)})
+      `,
       sql`insert into rooms (id, name, personal) values (${roomId}, ${`${name}’s scripts`}, true)`,
       sql`
         insert into room_members (room_id, writer_id, role, color)
@@ -65,11 +75,11 @@ export function POST(request: Request) {
     switch (body.action) {
       case 'create-account': {
         const name = requireName(body.name);
-        const passkey = generatePasskey();
-        const { writerId, statements } = accountStatements(name, passkey);
+        const secrets = newSecrets();
+        const { writerId, statements } = accountStatements(name, secrets);
         await sql.transaction(statements);
         const cookie = await createSession(request, writerId);
-        return json(await sessionPayload({ id: writerId, name, sessionHash: '' }, passkey), {
+        return json(await sessionPayload(newWriter(writerId, name), secrets), {
           status: 201,
           cookies: [cookie],
         });
@@ -132,11 +142,11 @@ export function POST(request: Request) {
           return json(await sessionPayload(signedIn), { status: 201 });
         }
         // New to Focus: create their account (with its personal room) and join
-        const passkey = generatePasskey();
-        const { writerId, statements } = accountStatements(name, passkey);
+        const secrets = newSecrets();
+        const { writerId, statements } = accountStatements(name, secrets);
         await sql.transaction([...statements, joinStatement(writerId)]);
         const cookie = await createSession(request, writerId);
-        return json(await sessionPayload({ id: writerId, name, sessionHash: '' }, passkey), {
+        return json(await sessionPayload(newWriter(writerId, name), secrets), {
           status: 201,
           cookies: [cookie],
         });
@@ -146,25 +156,62 @@ export function POST(request: Request) {
         const name = requireName(body.name);
         const passkey = String(body.passkey ?? '');
         if (!normalizeCode(passkey)) throw new HttpError(400, 'Enter your passkey.');
-        const [row] = await sql`select id, name from writers where passkey_hash = ${hashPasskey(passkey)}`;
+        const [row] = await sql`
+          select id, name, (select count(*) from device_passkeys d where d.writer_id = w.id)::int as devices
+          from writers w where passkey_hash = ${hashPasskey(passkey)}
+        `;
         // Same message for a wrong name or a wrong passkey
         if (!row || String(row.name).toLowerCase() !== name.toLowerCase()) {
           throw new HttpError(401, 'That name and passkey don’t match. Check both and try again.');
         }
-        const writer: Writer = { id: String(row.id), name: String(row.name), sessionHash: '' };
+        const writer = { ...newWriter(String(row.id), String(row.name)), devicePasskeys: Number(row.devices) };
         const cookie = await createSession(request, writer.id);
         return json(await sessionPayload(writer), { cookies: [cookie] });
       }
 
-      case 'new-passkey': {
-        // For a lost or shared passkey: replaces it and signs out every other device
-        const me = await requireWriter(request);
-        const passkey = generatePasskey();
+      case 'recover': {
+        // Lost passkey: the recovery code proves it's them, so it replaces both
+        // codes, signs out every other device, and opens their rooms here
+        const name = requireName(body.name);
+        const code = String(body.recoveryCode ?? '');
+        if (!normalizeCode(code)) throw new HttpError(400, 'Enter your recovery code.');
+        const [row] = await sql`
+          select id, name, (select count(*) from device_passkeys d where d.writer_id = w.id)::int as devices
+          from writers w where recovery_hash = ${hashRecoveryCode(code)}
+        `;
+        if (!row || String(row.name).toLowerCase() !== name.toLowerCase()) {
+          throw new HttpError(401, 'That name and recovery code don’t match. Check both and try again.');
+        }
+        const secrets = newSecrets();
         await sql.transaction([
-          sql`update writers set passkey_hash = ${hashPasskey(passkey)} where id = ${me.id}`,
+          sql`
+            update writers
+            set passkey_hash = ${hashPasskey(secrets.passkey)}, recovery_hash = ${hashRecoveryCode(secrets.recoveryCode)}
+            where id = ${row.id}
+          `,
+          sql`delete from sessions where writer_id = ${row.id}`,
+        ]);
+        const writer = { ...newWriter(String(row.id), String(row.name), true), devicePasskeys: Number(row.devices) };
+        const cookie = await createSession(request, writer.id, true);
+        return json(await sessionPayload(writer, secrets), { cookies: [cookie] });
+      }
+
+      case 'new-passkey': {
+        // Replaces the passkey and recovery code, and signs out every other device
+        const me = await requireWriter(request);
+        if (me.devicePasskeys > 0) {
+          requireDeviceCheck(me, 'Confirm it’s you with Face ID, Touch ID or your device’s screen lock first.');
+        }
+        const secrets = newSecrets();
+        await sql.transaction([
+          sql`
+            update writers
+            set passkey_hash = ${hashPasskey(secrets.passkey)}, recovery_hash = ${hashRecoveryCode(secrets.recoveryCode)}
+            where id = ${me.id}
+          `,
           sql`delete from sessions where writer_id = ${me.id} and token_hash <> ${me.sessionHash}`,
         ]);
-        return json(await sessionPayload(me, passkey));
+        return json(await sessionPayload(me, secrets));
       }
 
       case 'sign-out': {

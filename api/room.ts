@@ -1,5 +1,12 @@
 import { db } from './_lib/db.js';
-import { generateInviteCode, requireMember, requireOwner, requireWriter, toRoomWriter } from './_lib/auth.js';
+import {
+  generateInviteCode,
+  requireMember,
+  requireOwner,
+  requireRoomAccess,
+  requireWriter,
+  toRoomWriter,
+} from './_lib/auth.js';
 import { HttpError, assertSameOrigin, cleanText, handle, json, readJson, requireUuid } from './_lib/http.js';
 import { MAX_WRITERS_PER_ROOM, type RoomDetails } from './_lib/types.js';
 
@@ -16,6 +23,7 @@ export function GET(request: Request) {
     const me = await requireWriter(request);
     const roomId = requireUuid(new URL(request.url).searchParams.get('id'), 'room');
     const member = await requireMember(me, roomId);
+    requireRoomAccess(me, member);
     const sql = db();
     const [writers, scripts] = await sql.transaction(
       [
@@ -62,6 +70,8 @@ export function POST(request: Request) {
     const me = await requireWriter(request);
     const body = await readJson<RoomBody>(request);
     const member = await requireMember(me, requireUuid(body.roomId, 'room'));
+    // Leaving needs no confirmation; changing the room does
+    if (body.action !== 'leave') requireRoomAccess(me, member);
     const sql = db();
 
     switch (body.action) {

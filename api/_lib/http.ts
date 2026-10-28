@@ -2,7 +2,9 @@
 export class HttpError extends Error {
   constructor(
     public status: number,
-    message: string
+    message: string,
+    /** For the client to act on, e.g. 'device-check' */
+    public code?: string
   ) {
     super(message);
   }
@@ -20,7 +22,7 @@ export async function handle(run: () => Promise<Response>): Promise<Response> {
     return await run();
   } catch (error) {
     if (error instanceof HttpError) {
-      return json({ error: error.message }, { status: error.status });
+      return json({ error: error.message, ...(error.code ? { code: error.code } : {}) }, { status: error.status });
     }
     console.error(error);
     return json({ error: 'Something went wrong on our side. Try again.' }, { status: 500 });

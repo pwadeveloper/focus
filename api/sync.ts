@@ -1,5 +1,5 @@
 import { db, toNumber } from './_lib/db.js';
-import { requireWriter, toRoomWriter } from './_lib/auth.js';
+import { requireMember, requireRoomAccess, requireWriter, toRoomWriter } from './_lib/auth.js';
 import { HttpError, assertSameOrigin, cleanText, handle, json, readJson, requireUuid } from './_lib/http.js';
 import { cleanMeta, sceneRecords, toSceneRow } from './_lib/scenes.js';
 import type { SyncRequest, SyncResponse } from './_lib/types.js';
@@ -35,6 +35,7 @@ export function POST(request: Request) {
     `;
     if (!script) throw new HttpError(404, 'This script is no longer in any of your rooms.');
     const roomId = String(script.room_id);
+    requireRoomAccess(me, await requireMember(me, roomId));
 
     if (body.leave) {
       await sql.transaction([

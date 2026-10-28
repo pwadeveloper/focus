@@ -8,7 +8,7 @@ import type {
   SyncChanges,
   SyncResponse,
 } from '../../api/_lib/types';
-import { CLIENT_ID, RoomApiError, roomApi } from './api';
+import { CLIENT_ID, RoomApiError, needsDeviceCheck, roomApi } from './api';
 import { applyMeta, documentMeta, sameScene, sceneToUnit, unitToScene } from './convert';
 
 const VISIBLE_INTERVAL_MS = 2000;
@@ -18,8 +18,12 @@ const EDIT_DEBOUNCE_MS = 600;
 const IDLE_RELEASE_MS = 10 * 60 * 1000;
 
 export interface RoomSyncState {
-  /** signed-out: the session ended (passkey reissued, removed). gone: the script was deleted. */
-  status: 'connecting' | 'live' | 'offline' | 'signed-out' | 'gone';
+  /**
+   * signed-out: the session ended (a new passkey was made elsewhere).
+   * gone: the script was deleted or the writer left its room.
+   * locked: a shared room waiting for Face ID / Touch ID on this device.
+   */
+  status: 'connecting' | 'live' | 'offline' | 'signed-out' | 'gone' | 'locked';
   /** The scene this tab holds and can type in */
   heldSceneId: string | null;
   /** Scene id to the writer (and tab) holding it */
@@ -127,6 +131,8 @@ export class RoomSync {
   private rerun = false;
   private stopped = false;
   private released = false;
+  /** Paused until the writer confirms with a device passkey */
+  private locked = false;
   private lastEditAt = Date.now();
   private state: RoomSyncState = {
     status: 'connecting',
@@ -214,6 +220,14 @@ export class RoomSync {
     this.schedule(0);
   }
 
+  /** After a device passkey confirmation: start syncing again. */
+  resume() {
+    if (!this.locked) return;
+    this.locked = false;
+    this.setState({ status: 'connecting' });
+    this.schedule(0);
+  }
+
   /** After stepping away: take the scene back if it's still free. */
   keepWriting() {
     this.lastEditAt = Date.now();
@@ -296,7 +310,7 @@ export class RoomSync {
 
   /** Runs a sync after `delay`, unless one is already due sooner. */
   private schedule(delay?: number) {
-    if (this.stopped) return;
+    if (this.stopped || this.locked) return;
     const wait = delay ?? (document.hidden ? HIDDEN_INTERVAL_MS : VISIBLE_INTERVAL_MS);
     if (Date.now() + wait >= this.timerAt) return;
     this.clearTimer();
@@ -338,6 +352,11 @@ export class RoomSync {
       this.absorb(res, { sent, deleted, ids, metaJson, metaChanged, heldBefore, sceneId });
     } catch (error) {
       if (this.stopped) return;
+      if (needsDeviceCheck(error)) {
+        this.locked = true;
+        this.setState({ status: 'locked', heldSceneId: null });
+        return;
+      }
       const status = error instanceof RoomApiError ? error.status : 0;
       if (status === 401 || status === 404) {
         this.setState({ status: status === 401 ? 'signed-out' : 'gone', heldSceneId: null });

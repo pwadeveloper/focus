@@ -46,6 +46,7 @@ import { WriterAvatar } from './components/WriterAvatar';
 import { CLIENT_ID, loadCachedSession, roomApi, saveCachedSession } from './room/api';
 import { documentMeta, roomDocId, roomScriptToDocument, unitToScene } from './room/convert';
 import { useRoomSync } from './room/useRoomSync';
+import { unlockRooms } from './room/devicePasskey';
 import { primeBaseline, type DocUpdate } from './room/RoomSync';
 import type { RoomScript, RoomWriter, SessionResponse } from '../api/_lib/types';
 
@@ -493,19 +494,24 @@ export const App: React.FC = () => {
   const refreshLibrary = useCallback(async () => {
     lastLibraryRefreshRef.current = Date.now();
     let scripts: RoomScript[];
+    let lockedRooms: Set<string>;
     try {
       const [session, library] = await Promise.all([roomApi.session(), roomApi.library()]);
       updateAccount(session);
       scripts = library.scripts;
+      lockedRooms = new Set(library.lockedRoomIds);
     } catch {
       return;
     }
     setDocuments((prev) => {
       const isActive = (scriptId: string) =>
         prev.find((d) => d.room?.scriptId === scriptId)?.id === activeDocIdRef.current;
-      // Scripts deleted, or in rooms the writer has left, go away
+      // Scripts deleted, or in rooms the writer has left, go away. Rooms waiting
+      // for a Face ID / Touch ID confirmation keep the copies already here.
       const reachable = new Set(scripts.map((script) => script.id));
-      let next = prev.filter((d) => !d.room || reachable.has(d.room.scriptId));
+      let next = prev.filter(
+        (d) => !d.room || reachable.has(d.room.scriptId) || lockedRooms.has(d.room.roomId)
+      );
       for (const script of scripts) {
         // The open script is live already; its sync keeps it current
         if (isActive(script.id)) continue;
@@ -616,7 +622,7 @@ export const App: React.FC = () => {
       : null;
   const roomSceneId =
     activeDoc.room && viewMode === 'write' && !showHome ? activeUnit?.id ?? null : null;
-  const { state: roomSync, keepWriting, release: releaseRoomSync } = useRoomSync({
+  const { state: roomSync, keepWriting, release: releaseRoomSync, resume: resumeRoomSync } = useRoomSync({
     doc: activeDoc,
     me: roomMe,
     sceneId: roomSceneId,
@@ -645,6 +651,26 @@ export const App: React.FC = () => {
     updateAccount(null);
     dropRoomDocuments();
   }, [releaseRoomSync, updateAccount, dropRoomDocuments]);
+
+  // Writers rooms ask for Face ID / Touch ID on each device
+  const [deviceError, setDeviceError] = useState<string | null>(null);
+  const handleAccountUpdate = useCallback(
+    (session: SessionResponse) => {
+      updateAccount(session);
+      if (session.security.roomVerified) resumeRoomSync();
+      void refreshLibrary();
+    },
+    [updateAccount, resumeRoomSync, refreshLibrary]
+  );
+  const handleUnlockRooms = useCallback(async () => {
+    if (!account) return;
+    setDeviceError(null);
+    try {
+      handleAccountUpdate(await unlockRooms(account));
+    } catch (error) {
+      setDeviceError((error as Error).message);
+    }
+  }, [account, handleAccountUpdate]);
 
   const roomWriterById = (id: string | undefined) =>
     id ? roomSync?.writers.find((w) => w.id === id) : undefined;
@@ -675,6 +701,16 @@ export const App: React.FC = () => {
       );
     } else if (!roomMe) {
       editorNotice = <span>You’re no longer in the writers room this script belongs to.</span>;
+    } else if (syncStatus === 'locked') {
+      editorNotice = (
+        <span className="min-w-0">
+          Writers rooms ask for Face ID, Touch ID or your device’s screen lock on each device.{' '}
+          <button type="button" onClick={handleUnlockRooms} className={linkClass}>
+            {account.security.devicePasskeys > 0 ? 'Confirm it’s you' : 'Set it up on this device'}
+          </button>
+          {deviceError && <span className="text-[var(--accent)]"> {deviceError}</span>}
+        </span>
+      );
     } else if (lockedElsewhere && lock?.writerId === account.me.id) {
       editorNotice = (
         <span>
@@ -719,6 +755,8 @@ export const App: React.FC = () => {
       ? 'Synced'
       : syncStatus === 'offline'
       ? 'Offline'
+      : syncStatus === 'locked'
+      ? 'Locked'
       : 'Syncing…'
     : undefined;
   const accountBadge = account
@@ -1066,10 +1104,7 @@ export const App: React.FC = () => {
         open={writersRoomOpen}
         onClose={() => setWritersRoomOpen(false)}
         account={account}
-        onAccount={(session) => {
-          updateAccount(session);
-          void refreshLibrary();
-        }}
+        onAccount={handleAccountUpdate}
         onSignOut={handleSignOut}
         activeDoc={activeDoc}
         onOpenScript={handleOpenRoomScript}

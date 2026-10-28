@@ -27,6 +27,10 @@ export const generatePasskey = () =>
 /** e.g. 7K2M-9QXA-P4TD */
 export const generateInviteCode = () => `${codeGroup(4)}-${codeGroup(4)}-${codeGroup(4)}`;
 
+/** e.g. 7K2M-9QXA-P4TD-RW8N-3HJC: about 98 bits, for when the passkey is lost. */
+export const generateRecoveryCode = () =>
+  Array.from({ length: 5 }, () => codeGroup(4)).join('-');
+
 /** Case, spaces and dashes don't matter when a code is typed back in. */
 export const normalizeCode = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
@@ -34,6 +38,10 @@ const sha256 = (value: string) => createHash('sha256').update(value).digest('hex
 
 /** Passkeys are long random codes, so a fast hash is enough (no user-chosen secrets). */
 export const hashPasskey = (passkey: string) => sha256(normalizeCode(passkey));
+export const hashRecoveryCode = (code: string) => sha256(`recovery:${normalizeCode(code)}`);
+
+/** How long a device passkey confirmation keeps shared rooms open on a device. */
+export const ROOM_VERIFIED_DAYS = 30;
 
 /** The signed-in writer (a person, across all their rooms). */
 export interface Writer {
@@ -41,7 +49,19 @@ export interface Writer {
   name: string;
   /** Empty when the session was only just created */
   sessionHash: string;
+  devicePasskeys: number;
+  /** Confirmed with a device passkey (or recovery code) recently on this device */
+  roomVerified: boolean;
 }
+
+/** A writer whose session was created in this request. */
+export const newWriter = (id: string, name: string, roomVerified = false): Writer => ({
+  id,
+  name,
+  sessionHash: '',
+  devicePasskeys: 0,
+  roomVerified,
+});
 
 export const toRoomWriter = (row: Record<string, unknown>): RoomWriter => ({
   id: String(row.id),
@@ -51,7 +71,10 @@ export const toRoomWriter = (row: Record<string, unknown>): RoomWriter => ({
 });
 
 /** The writer and every room they belong to, personal room first. */
-export async function sessionPayload(writer: Writer, passkey?: string): Promise<SessionResponse> {
+export async function sessionPayload(
+  writer: Writer,
+  secrets: { passkey?: string; recoveryCode?: string } = {}
+): Promise<SessionResponse> {
   const rows = await db()`
     select r.id, r.name, r.personal, m.role, m.color
     from room_members m join rooms r on r.id = m.room_id
@@ -65,7 +88,12 @@ export async function sessionPayload(writer: Writer, passkey?: string): Promise<
     role: row.role as WriterRole,
     color: row.color as WriterColor,
   }));
-  return { me: { id: writer.id, name: writer.name }, rooms, ...(passkey ? { passkey } : {}) };
+  return {
+    me: { id: writer.id, name: writer.name },
+    rooms,
+    security: { devicePasskeys: writer.devicePasskeys, roomVerified: writer.roomVerified },
+    ...secrets,
+  };
 }
 
 function readCookie(request: Request, name: string): string | null {
@@ -84,12 +112,19 @@ function cookieAttributes(request: Request): string {
   return `Path=/; HttpOnly; SameSite=Lax${secure}`;
 }
 
-/** Starts a session for a writer and returns its Set-Cookie header. */
-export async function createSession(request: Request, writerId: string): Promise<string> {
+/**
+ * Starts a session for a writer and returns its Set-Cookie header.
+ * `roomVerified` when they just proved it's them with something stronger
+ * than the passkey (their recovery code).
+ */
+export async function createSession(request: Request, writerId: string, roomVerified = false): Promise<string> {
   const token = randomBytes(32).toString('base64url');
   await db()`
-    insert into sessions (token_hash, writer_id, expires_at)
-    values (${sha256(token)}, ${writerId}, now() + make_interval(days => ${SESSION_DAYS}::int))
+    insert into sessions (token_hash, writer_id, expires_at, room_verified_at)
+    values (
+      ${sha256(token)}, ${writerId}, now() + make_interval(days => ${SESSION_DAYS}::int),
+      case when ${roomVerified}::boolean then now() end
+    )
   `;
   return `${SESSION_COOKIE}=${token}; Max-Age=${SESSION_DAYS * 86400}; ${cookieAttributes(request)}`;
 }
@@ -102,12 +137,20 @@ export async function findWriter(request: Request): Promise<Writer | null> {
   if (!token) return null;
   const sessionHash = sha256(token);
   const [row] = await db()`
-    select w.id, w.name
+    select w.id, w.name,
+      coalesce(s.room_verified_at > now() - make_interval(days => ${ROOM_VERIFIED_DAYS}::int), false) as room_verified,
+      (select count(*) from device_passkeys d where d.writer_id = w.id)::int as device_passkeys
     from sessions s join writers w on w.id = s.writer_id
     where s.token_hash = ${sessionHash} and s.expires_at > now()
   `;
   if (!row) return null;
-  return { id: String(row.id), name: String(row.name), sessionHash };
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    sessionHash,
+    devicePasskeys: Number(row.device_passkeys),
+    roomVerified: Boolean(row.room_verified),
+  };
 }
 
 export async function requireWriter(request: Request): Promise<Writer> {
@@ -141,6 +184,16 @@ export async function requireMember(writer: Writer, roomId: string): Promise<Mem
     role: row.role as WriterRole,
     color: row.color as WriterColor,
   };
+}
+
+/** Shared rooms need a recent device passkey confirmation on this device. */
+export function requireRoomAccess(writer: Writer, member: MemberOf): void {
+  if (!member.personal) requireDeviceCheck(writer, 'Confirm it’s you with Face ID, Touch ID or your device’s screen lock to open this writers room.');
+}
+
+/** Writers who added device passkeys must confirm with one for sensitive changes. */
+export function requireDeviceCheck(writer: Writer, message: string): void {
+  if (!writer.roomVerified) throw new HttpError(403, message, 'device-check');
 }
 
 export function requireOwner(member: MemberOf): void {

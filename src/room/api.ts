@@ -1,4 +1,5 @@
 import type {
+  DevicePasskey,
   LibraryResponse,
   RoomDetails,
   RoomScript,
@@ -13,11 +14,16 @@ import type {
 export class RoomApiError extends Error {
   constructor(
     public status: number,
-    message: string
+    message: string,
+    /** 'device-check': confirm with Face ID / Touch ID, then retry */
+    public code?: string
   ) {
     super(message);
   }
 }
+
+export const needsDeviceCheck = (error: unknown) =>
+  error instanceof RoomApiError && error.code === 'device-check';
 
 /** Identifies this tab across reloads, so a writer's devices hold scenes separately. */
 export const CLIENT_ID = (() => {
@@ -47,8 +53,8 @@ export function loadCachedSession(): SessionResponse | null {
 export function saveCachedSession(session: SessionResponse | null): void {
   try {
     if (session) {
-      // Never keep the passkey itself
-      const { passkey: _passkey, ...rest } = session;
+      // Never keep the codes themselves
+      const { passkey: _passkey, recoveryCode: _recoveryCode, ...rest } = session;
       localStorage.setItem(ACCOUNT_KEY, JSON.stringify(rest));
     } else {
       localStorage.removeItem(ACCOUNT_KEY);
@@ -71,9 +77,9 @@ async function call<T>(path: string, body?: unknown, keepalive = false): Promise
   } catch {
     throw new RoomApiError(0, 'Can’t reach Focus. Check your connection.');
   }
-  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string; code?: string };
   if (!res.ok) {
-    throw new RoomApiError(res.status, data?.error ?? 'Something went wrong. Try again.');
+    throw new RoomApiError(res.status, data?.error ?? 'Something went wrong. Try again.', data?.code);
   }
   return data;
 }
@@ -84,6 +90,9 @@ export const roomApi = {
   createAccount: (name: string) => call<SessionResponse>('/api/auth', { action: 'create-account', name }),
   signIn: (name: string, passkey: string) =>
     call<SessionResponse>('/api/auth', { action: 'sign-in', name, passkey }),
+  /** Lost passkey: replaces both codes and signs out every other device. */
+  recover: (name: string, recoveryCode: string) =>
+    call<SessionResponse>('/api/auth', { action: 'recover', name, recoveryCode }),
   /** Signed out, this also creates the writer's account. */
   join: (inviteCode: string, name?: string) =>
     call<SessionResponse>('/api/auth', { action: 'join', inviteCode, name }),
@@ -96,6 +105,10 @@ export const roomApi = {
   removeWriter: (roomId: string, writerId: string) =>
     call<{ ok: true }>('/api/room', { roomId, action: 'remove-writer', writerId }),
   leaveRoom: (roomId: string) => call<{ ok: true }>('/api/room', { roomId, action: 'leave' }),
+
+  devicePasskeys: () => call<{ devices: DevicePasskey[] }>('/api/passkeys'),
+  devicePasskeyAction: <T,>(action: string, extra: Record<string, unknown> = {}) =>
+    call<T>('/api/passkeys', { action, ...extra }),
 
   library: () => call<LibraryResponse>('/api/scripts'),
   getScript: (id: string) => call<RoomScript>(`/api/scripts?id=${encodeURIComponent(id)}`),

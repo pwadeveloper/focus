@@ -93,3 +93,31 @@ create table if not exists presence (
   seen_at timestamptz not null default now(),
   primary key (writer_id, client_id)
 );
+
+-- Recovery: a second, longer code for when the passkey is lost (hash only)
+alter table writers add column if not exists recovery_hash text unique;
+
+-- Device passkeys (Face ID, Touch ID, Windows Hello, security keys). Opening a
+-- shared room requires confirming with one; the confirmation lasts 30 days
+-- for that session (device)
+create table if not exists device_passkeys (
+  id text primary key,
+  writer_id uuid not null references writers(id) on delete cascade,
+  public_key text not null,
+  counter bigint not null default 0,
+  transports text[],
+  label text not null,
+  created_at timestamptz not null default now(),
+  last_used_at timestamptz
+);
+
+create index if not exists device_passkeys_writer_idx on device_passkeys (writer_id);
+
+alter table sessions add column if not exists room_verified_at timestamptz;
+
+-- The pending WebAuthn challenge for a session (one at a time, short-lived)
+create table if not exists webauthn_challenges (
+  session_hash text primary key references sessions(token_hash) on delete cascade,
+  challenge text not null,
+  expires_at timestamptz not null
+);

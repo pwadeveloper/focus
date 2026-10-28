@@ -24,8 +24,22 @@ export interface Membership {
 export interface SessionResponse {
   me: { id: string; name: string };
   rooms: Membership[];
-  /** Only present right after a passkey is created; it is never shown again. */
+  security: {
+    /** Face ID / Touch ID / security keys the writer has added */
+    devicePasskeys: number;
+    /** This device confirmed with one recently, so shared rooms are open */
+    roomVerified: boolean;
+  };
+  /** Only present right after they are created; never shown again. */
   passkey?: string;
+  recoveryCode?: string;
+}
+
+export interface DevicePasskey {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
 }
 
 export interface RoomScriptSummary {
@@ -78,9 +92,11 @@ export interface RoomScript {
   scenes: SceneRow[];
 }
 
-/** Every script in every room the writer belongs to. */
+/** Every script the writer can open on this device. */
 export interface LibraryResponse {
   scripts: RoomScript[];
+  /** Shared rooms whose scripts need a device passkey confirmation first */
+  lockedRoomIds: string[];
 }
 
 export interface SyncChanges {
