@@ -41,6 +41,13 @@ import { NewWorkModal } from './components/NewWorkModal';
 import { BottomHud } from './components/BottomHud';
 import { ShortcutsModal } from './components/ShortcutsModal';
 import { WelcomeHome } from './components/WelcomeHome';
+import { WritersRoomDialog } from './components/WritersRoomDialog';
+import { WriterAvatar } from './components/WriterAvatar';
+import { roomApi } from './room/api';
+import { roomDocId, roomScriptToDocument } from './room/convert';
+import { useRoomSync } from './room/useRoomSync';
+import type { DocUpdate } from './room/RoomSync';
+import type { RoomScript, SessionResponse } from '../api/_lib/types';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<WriterSettings>(() => loadSettings());
@@ -60,6 +67,8 @@ export const App: React.FC = () => {
   const closeScreenplayExport = useCallback(() => setScreenplayExportOpen(false), []);
   const [isTyping, setIsTyping] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved');
+  const [roomSession, setRoomSession] = useState<SessionResponse | null>(null);
+  const [writersRoomOpen, setWritersRoomOpen] = useState(false);
 
   const lastPointerPos = useRef<{ x: number; y: number } | null>(null);
   const saveTimerRef = useRef<number | null>(null);
@@ -419,6 +428,7 @@ export const App: React.FC = () => {
         id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         title: source.title ? `${source.title} (Copy)` : 'Untitled (Copy)',
         pinned: false,
+        room: undefined,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
@@ -448,6 +458,139 @@ export const App: React.FC = () => {
     },
     [activeDoc.id, persistDocs]
   );
+
+  // Writers room: scripts shared through the database
+  const dropRoomDocuments = useCallback(
+    (scriptId?: string) => {
+      setDocuments((prev) => {
+        const keep = prev.filter((d) => !d.room || (scriptId !== undefined && d.room.scriptId !== scriptId));
+        if (keep.length === prev.length) return prev;
+        const next = keep.length > 0 ? keep : [createNewWorkItem('Untitled screenplay')];
+        persistDocs(next);
+        return next;
+      });
+    },
+    [persistDocs]
+  );
+
+  useEffect(() => {
+    // Offline: keep room scripts on this device until the room can be reached
+    roomApi
+      .session()
+      .then((session) => {
+        setRoomSession(session);
+        // Signed out: room scripts left on this device can't sync, so drop them
+        if (!session) dropRoomDocuments();
+      })
+      .catch(() => {});
+  }, [dropRoomDocuments]);
+
+  const handleOpenRoomScript = useCallback(
+    (script: RoomScript) => {
+      if (!roomSession) return;
+      const id = roomDocId(script.id);
+      // An open room script is already live; only refresh copies that aren't syncing
+      if (id !== activeDoc.id) {
+        setDocuments((prev) => {
+          const existing = prev.find((d) => d.id === id);
+          const doc = roomScriptToDocument(script, roomSession.room.id, existing);
+          const next = existing ? prev.map((d) => (d.id === id ? doc : d)) : [doc, ...prev];
+          persistDocs(next);
+          return next;
+        });
+        setActiveDocId(id);
+        saveActiveDocIdSync(id);
+      }
+      setViewMode('write');
+      setWritersRoomOpen(false);
+      handleLeaveHome();
+    },
+    [roomSession, activeDoc.id, persistDocs, handleLeaveHome]
+  );
+
+  const handleRemoteUpdate = useCallback(
+    (docId: string, update: DocUpdate) => {
+      setDocuments((prev) => {
+        const next = prev.map((d) => (d.id === docId ? update(d) : d));
+        persistDocs(next);
+        return next;
+      });
+    },
+    [persistDocs]
+  );
+
+  // Sync only scripts from the room this writer is signed in to
+  const roomMe =
+    roomSession && activeDoc.room?.roomId === roomSession.room.id ? roomSession.me : null;
+  const roomSceneId =
+    activeDoc.room && viewMode === 'write' && !showHome ? activeUnit?.id ?? null : null;
+  const { state: roomSync, keepWriting } = useRoomSync({
+    doc: activeDoc,
+    me: roomMe,
+    sceneId: roomSceneId,
+    wantLock: roomSceneId !== null,
+    onRemote: handleRemoteUpdate,
+  });
+
+  useEffect(() => {
+    if (roomSync?.status === 'signed-out') {
+      // Their passkey was reissued or they were removed from the room
+      setRoomSession(null);
+      dropRoomDocuments();
+      setWritersRoomOpen(true);
+    } else if (roomSync?.status === 'gone' && activeDoc.room) {
+      dropRoomDocuments(activeDoc.room.scriptId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomSync?.status]);
+
+  const roomWriterById = (id: string | undefined) =>
+    id ? roomSync?.writers.find((w) => w.id === id) : undefined;
+
+  let editorReadOnly = false;
+  let editorNotice: React.ReactNode = null;
+  if (activeDoc.room && activeUnit) {
+    const holder = roomWriterById(roomSync?.locks[activeUnit.id]);
+    editorReadOnly = roomSync?.heldSceneId !== activeUnit.id;
+    if (!roomMe) {
+      editorNotice = (
+        <span className="min-w-0">
+          This is a writers room script. Sign in to the room to keep working on it.{' '}
+          <button type="button" onClick={() => setWritersRoomOpen(true)} className="font-medium text-[var(--ink-1)] underline decoration-[var(--border-strong)] underline-offset-2 hover:decoration-[var(--ink-1)]">
+            Open the writers room
+          </button>
+        </span>
+      );
+    } else if (holder && holder.id !== roomMe.id) {
+      editorNotice = (
+        <>
+          <WriterAvatar writer={holder} size="sm" />
+          <span className="min-w-0">
+            <span className="font-medium text-[var(--ink-1)]">{holder.name}</span> is writing this
+            scene. You’ll see their changes as they type, and can write once they move on.
+          </span>
+        </>
+      );
+    } else if (roomSync?.idle) {
+      editorNotice = (
+        <span className="min-w-0">
+          You stepped away, so this scene is open to the others.{' '}
+          <button type="button" onClick={keepWriting} className="font-medium text-[var(--ink-1)] underline decoration-[var(--border-strong)] underline-offset-2 hover:decoration-[var(--ink-1)]">
+            Keep writing
+          </button>
+        </span>
+      );
+    } else if (roomSync?.status === 'offline') {
+      editorNotice = <span>You’re offline. Keep writing; your changes sync when you reconnect.</span>;
+    }
+  }
+
+  const roomCollaborators = (roomSync?.presence ?? []).flatMap((p) => {
+    const writer = roomWriterById(p.writerId);
+    if (!writer) return [];
+    const index = activeDoc.units?.findIndex((u) => u.id === p.sceneId) ?? -1;
+    return [{ writer, where: index >= 0 ? `Scene ${index + 1}` : 'Viewing the script' }];
+  });
 
   // Restore UI chrome when mouse moves purposefully
   useEffect(() => {
@@ -595,6 +738,7 @@ export const App: React.FC = () => {
           isSample={activeDoc.id === STARTER_SCREENPLAY.id}
           onStartNew={handleOpenNewWorkModal}
           onContinue={handleLeaveHome}
+          onOpenWritersRoom={() => setWritersRoomOpen(true)}
         />
       ) : (
         <>
@@ -607,6 +751,8 @@ export const App: React.FC = () => {
 
           <TopBar
             onOpenHome={handleOpenHome}
+            onOpenWritersRoom={() => setWritersRoomOpen(true)}
+            collaborators={activeDoc.room ? roomCollaborators : undefined}
             isTyping={isTyping && viewMode === 'write'}
             sidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -712,6 +858,8 @@ export const App: React.FC = () => {
               onCloseScreenplayGuide={() => setScreenplayGuideOpen(false)}
               onToggleScreenplayGuide={() => setScreenplayGuideOpen((v) => !v)}
               onOpenTitlePage={() => setTitlePageOpen(true)}
+              readOnly={editorReadOnly}
+              notice={editorNotice}
             />
           )}
 
@@ -777,6 +925,20 @@ export const App: React.FC = () => {
             titlePage: { ...d.titlePage, ...patch },
           }))
         }
+      />
+
+      <WritersRoomDialog
+        open={writersRoomOpen}
+        onClose={() => setWritersRoomOpen(false)}
+        session={roomSession}
+        onSession={setRoomSession}
+        onSignOut={() => {
+          setRoomSession(null);
+          dropRoomDocuments();
+        }}
+        activeDoc={activeDoc}
+        onOpenScript={handleOpenRoomScript}
+        onScriptDeleted={(scriptId) => dropRoomDocuments(scriptId)}
       />
 
       <ShortcutsModal

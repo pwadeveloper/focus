@@ -97,6 +97,8 @@ export interface DocumentItem {
   screenplayExport?: ScreenplayExportSettings;
   /** Locked draft used for revision marks */
   revisionBaseline?: RevisionBaseline;
+  /** Set when this is a writers room script; it syncs with the room's database. */
+  room?: { roomId: string; scriptId: string };
   /** Unused by scenes; kept so documents round-trip with older data */
   contentHtml: string;
   /** Ordered list of scenes */

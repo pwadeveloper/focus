@@ -53,6 +53,19 @@ Along the left edge of the page sits a column of tick marks, one per scene headi
 - **Paper themes.** **Paper**, **Sepia**, and **Night**. An inline script in `index.html` applies the saved theme before first paint so the page never flashes on reload.
 - **Typeface and measure.** The `Aa` menu switches between *Newsreader* (serif), *Plus Jakarta Sans* (sans), and *JetBrains Mono* (mono), with four font sizes and three column widths.
 
+## Writers room
+
+Up to three writers can work on the same script. Nobody signs up with an email:
+
+- **Start a room.** Enter your name (and optionally a room name). Focus shows you a passkey such as `DOLLY-7K2M-9QXA` exactly once. Your name plus that passkey signs you in on any device.
+- **Invite.** The room shows an invite code such as `7K2M-9QXA-P4TD`. A writer chooses **Join a room**, enters the code and their name, and gets their own passkey. Names are unique within a room.
+- **Lost passkeys.** The person who started the room can issue a writer a new passkey (the old one stops working and signs them out everywhere), remove a writer, or replace the invite code.
+- **Scripts.** Start a new script in the room, or share a copy of the script you have open. Scripts not in a room stay on your device only.
+
+Writers work scene by scene. Opening a scene holds it: the others see who is in it, watch it update every couple of seconds, and can write in other scenes. A held scene frees up when its writer moves on, closes the tab, or stops typing for ten minutes. Title, title page, and export settings sync too (the last change wins). If a writer's hold lapses during a long disconnect and someone else takes the scene, their unsent text is kept as a new scene named "(Name's version)".
+
+When a room script is reopened, the room's copy replaces whatever was saved on that device.
+
 ## Storage
 
 All scripts and settings save locally in `localStorage` (keys prefixed `focus:`) for a synchronous first render, and back up to `IndexedDB` (`FocusWriterDB`) so long scripts do not hit storage quotas. Nothing leaves the browser.
@@ -76,6 +89,7 @@ All scripts and settings save locally in `localStorage` (keys prefixed `focus:`)
 
 - `src/App.tsx` manages scripts, the active scene, keyboard shortcuts, and exports.
 - `src/components/WelcomeHome.tsx` renders the welcome home page and the filmschool.Africa credit (logo in `src/assets/`).
+- `src/components/FocusLogo.tsx` holds the `_focus` wordmark and the `_f` mark, colored per theme by `--logo-ink`. The `_f` favicon set (`favicon.svg`, `favicon.ico`, `apple-touch-icon.png`) lives in `public/`.
 - `src/components/RichEditor.tsx` renders the `contentEditable` scene canvas, element triggers, dual dialogue layout, focus dimming, typewriter scroll, and the scene turn bar.
 - `src/components/ScreenplayTools.tsx` provides the scene heading, character, and transition autocomplete and the element switcher bar.
 - `src/components/ScreenplayGuide.tsx` renders the searchable screenplay guide panel.
@@ -87,6 +101,9 @@ All scripts and settings save locally in `localStorage` (keys prefixed `focus:`)
 - `src/components/SidebarDrawer.tsx` renders the script library drawer.
 - `src/components/DocumentOutline.tsx` renders the left-margin outline scanner.
 - `src/storage.ts` handles `localStorage` and `IndexedDB` persistence and the starter script.
+- `api/` holds the writers room's Vercel Functions: `auth.ts` (start, join, sign in, sign out), `room.ts` (writers, invite code, passkeys), `scripts.ts` (open, create, delete), and `sync.ts` (one round trip per poll: scene locks, saves, presence, and changes since the client's versions). Shared code and the API types are in `api/_lib/`.
+- `db/schema.sql` is the Postgres schema; `npm run db:migrate` applies it.
+- `src/room/` is the client side: `api.ts` calls the functions, `RoomSync.ts` pushes local edits and merges remote ones, and `useRoomSync.ts` runs it for the open script. `src/components/WritersRoomDialog.tsx` is the room UI.
 
 ## Running locally
 
@@ -96,6 +113,16 @@ Install dependencies and start the Vite dev server:
 npm install
 npm run dev
 ```
+
+The writers room needs the Neon Postgres database connected to the `focus` Vercel project. `npm run dev` serves `api/*.ts` itself and reads the connection string from `.env.local`:
+
+```bash
+vercel link --project focus   # once
+vercel env pull .env.local    # DATABASE_URL and friends
+npm run db:migrate            # create or update the tables
+```
+
+Functions run in London (`lhr1`, in `vercel.json`), next to the database.
 
 Build the production bundle:
 

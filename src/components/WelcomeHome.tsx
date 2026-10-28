@@ -2,6 +2,7 @@ import React, { useLayoutEffect, useRef } from 'react';
 import gsap from 'gsap';
 import { ArrowRight, ArrowUpRight, Plus } from 'lucide-react';
 import filmSchoolLogo from '../assets/filmschool-africa-logo.png';
+import { FocusWordmark } from './FocusLogo';
 import { modKeys } from '../screenplay';
 import { prefersReducedMotion } from '../motion';
 
@@ -12,6 +13,7 @@ interface WelcomeHomeProps {
   isSample: boolean;
   onStartNew: () => void;
   onContinue: () => void;
+  onOpenWritersRoom: () => void;
 }
 
 /**
@@ -23,6 +25,7 @@ export const WelcomeHome: React.FC<WelcomeHomeProps> = ({
   isSample,
   onStartNew,
   onContinue,
+  onOpenWritersRoom,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const { mod } = modKeys();
@@ -56,7 +59,7 @@ export const WelcomeHome: React.FC<WelcomeHomeProps> = ({
       className="flex min-h-dvh flex-col"
     >
       <header className="px-6 pt-6 sm:px-10">
-        <span className="text-sm font-semibold tracking-[-0.01em] text-[var(--ink-1)]">Focus</span>
+        <FocusWordmark title="Focus" className="block h-6 w-auto" />
       </header>
 
       <main className="flex flex-1 items-center px-6 py-12 sm:px-10">
@@ -101,6 +104,16 @@ export const WelcomeHome: React.FC<WelcomeHomeProps> = ({
               <ArrowRight className="size-3.5 shrink-0" />
             </button>
           </div>
+          <p data-welcome-item className="mt-4 text-[13px] text-[var(--ink-3)]">
+            Writing with others?{' '}
+            <button
+              type="button"
+              onClick={onOpenWritersRoom}
+              className="relative font-medium text-[var(--ink-1)] underline decoration-[var(--border-strong)] underline-offset-2 transition-colors before:absolute before:-inset-x-1 before:-inset-y-1.5 hover:decoration-[var(--ink-1)]"
+            >
+              Enter the writers room
+            </button>
+          </p>
 
           <dl data-welcome-item className="mt-10 space-y-2">
             {quickStart.map((row) => (

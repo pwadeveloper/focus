@@ -28,6 +28,8 @@
   --border-subtle: rgba(17, 17, 17, 0.08);
   --border-strong: rgba(17, 17, 17, 0.15);
   --caret-color: #FF4B36;
+  /* Brand logo ink: the dark _focus wordmark */
+  --logo-ink: #242424;
 
   --butter: #F6DD8B;
   --sage: #ABC07F;
@@ -85,6 +87,7 @@
   --border-subtle: rgba(42, 33, 25, 0.09);
   --border-strong: rgba(42, 33, 25, 0.17);
   --caret-color: #F0553A;
+  --logo-ink: #242424;
 
   --butter: #EED28A;
   --sage: #B3BE86;
@@ -142,6 +145,8 @@
   --border-subtle: #262421;
   --border-strong: #33302C;
   --caret-color: #FF6A52;
+  /* The white _focus wordmark */
+  --logo-ink: #FFFFFF;
 
   /* Pastels become deep tinted surfaces at night; text flips to light ink */
   --butter: #3B3320;

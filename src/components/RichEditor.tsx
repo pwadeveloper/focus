@@ -69,6 +69,10 @@ interface RichEditorProps {
   onCloseScreenplayGuide?: () => void;
   onToggleScreenplayGuide?: () => void;
   onOpenTitlePage?: () => void;
+  /** Another writer holds this scene: show it updating, but don't allow edits. */
+  readOnly?: boolean;
+  /** Shown above the scene title, e.g. who is writing it. */
+  notice?: React.ReactNode;
 }
 
 export const RichEditor: React.FC<RichEditorProps> = ({
@@ -100,6 +104,8 @@ export const RichEditor: React.FC<RichEditorProps> = ({
   onCloseScreenplayGuide,
   onToggleScreenplayGuide,
   onOpenTitlePage,
+  readOnly = false,
+  notice,
 }) => {
   const mainRef = useRef<HTMLElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -189,6 +195,24 @@ export const RichEditor: React.FC<RichEditorProps> = ({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentKey, initialHtml, workKind, unitSlugline]);
+
+  // While another writer holds this scene, show their changes as they arrive.
+  // Also catch up once more as the scene becomes editable for us.
+  const readOnlyRef = useRef(readOnly);
+  const wasReadOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  useEffect(() => {
+    const el = editorRef.current;
+    const wasReadOnly = wasReadOnlyRef.current;
+    wasReadOnlyRef.current = readOnly;
+    if (!el || (!readOnly && !wasReadOnly) || !initialHtml) return;
+    if (el.innerHTML === initialHtml) return;
+    el.innerHTML = initialHtml;
+    setLiveHtml(el.innerHTML);
+    syncDualLayout();
+    setIsEmpty((el.textContent || '').trim().length === 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readOnly, initialHtml]);
 
   // Resolve top-level block inside editor for a DOM node
   const getTopLevelBlock = useCallback((node: Node | null): HTMLElement | null => {
@@ -327,7 +351,7 @@ export const RichEditor: React.FC<RichEditorProps> = ({
 
   const emitHtmlChange = useCallback(() => {
     const el = editorRef.current;
-    if (!el) return;
+    if (!el || readOnlyRef.current) return;
     if (workKind === 'screenplay') syncDualLayout();
     const text = (el.textContent || '').trim();
     setIsEmpty(text.length === 0);
@@ -1509,12 +1533,14 @@ export const RichEditor: React.FC<RichEditorProps> = ({
             position={spPopoverPos}
             onSelect={handleAcceptSuggestion}
           />
-          <ScreenplayElementBar
-            activeBlockType={activeSpBlockType}
-            onSelectBlockType={applyScreenplayBlockType}
-            onOpenGuide={onToggleScreenplayGuide}
-            guideOpen={screenplayGuideOpen}
-          />
+          {!readOnly && (
+            <ScreenplayElementBar
+              activeBlockType={activeSpBlockType}
+              onSelectBlockType={applyScreenplayBlockType}
+              onOpenGuide={onToggleScreenplayGuide}
+              guideOpen={screenplayGuideOpen}
+            />
+          )}
           <ScreenplayGuide
             open={screenplayGuideOpen}
             activeBlock={activeSpBlockType}
@@ -1535,11 +1561,13 @@ export const RichEditor: React.FC<RichEditorProps> = ({
           paddingBottom: typewriterMode ? '52vh' : '12rem',
         }}
       >
-        <FloatingToolbar
-          rect={selectionRect}
-          activeFormats={activeFormats}
-          onCommand={executeCommand}
-        />
+        {!readOnly && (
+          <FloatingToolbar
+            rect={selectionRect}
+            activeFormats={activeFormats}
+            onCommand={executeCommand}
+          />
+        )}
 
         {/* Focused Scene Eyebrow Bar */}
         {currentUnit && (
@@ -1606,6 +1634,16 @@ export const RichEditor: React.FC<RichEditorProps> = ({
           </div>
         )}
 
+        {notice && (
+          <div
+            role="status"
+            style={{ backgroundColor: 'var(--bg-surface)' }}
+            className="no-print mb-4 flex items-center gap-2.5 rounded-xl px-3.5 py-2.5 font-sans text-xs leading-relaxed text-[var(--ink-2)]"
+          >
+            {notice}
+          </div>
+        )}
+
         {/* Scene Title Field */}
         <div className="mb-6">
           <label htmlFor="manuscript-title" className="sr-only">
@@ -1616,6 +1654,7 @@ export const RichEditor: React.FC<RichEditorProps> = ({
             id="manuscript-title"
             rows={1}
             value={unitTitle}
+            readOnly={readOnly}
             onChange={(e) => {
               onChangeTitle(e.target.value);
               onUserTyping();
@@ -1675,7 +1714,8 @@ export const RichEditor: React.FC<RichEditorProps> = ({
           role="textbox"
           aria-multiline="true"
           aria-label="Screenplay body"
-          contentEditable
+          aria-readonly={readOnly || undefined}
+          contentEditable={!readOnly}
           suppressContentEditableWarning
           spellCheck
           data-work-kind={workKind}
