@@ -104,14 +104,14 @@ export const WelcomeHome: React.FC<WelcomeHomeProps> = ({
               <ArrowRight className="size-3.5 shrink-0" />
             </button>
           </div>
-          <p data-welcome-item className="mt-4 text-[13px] text-[var(--ink-3)]">
-            Writing with others?{' '}
+          <p data-welcome-item className="mt-4 text-[13px] leading-relaxed text-[var(--ink-3)]">
+            Writing on more than one device, or with others?{' '}
             <button
               type="button"
               onClick={onOpenWritersRoom}
               className="relative font-medium text-[var(--ink-1)] underline decoration-[var(--border-strong)] underline-offset-2 transition-colors before:absolute before:-inset-x-1 before:-inset-y-1.5 hover:decoration-[var(--ink-1)]"
             >
-              Enter the writers room
+              Get a passkey or sign in
             </button>
           </p>
 

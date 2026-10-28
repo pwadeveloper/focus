@@ -1,47 +1,67 @@
 import { randomUUID } from 'node:crypto';
 import { db, toNumber } from './_lib/db.js';
-import { requireOwner, requireWriter } from './_lib/auth.js';
+import { requireMember, requireOwner, requireWriter, type Writer } from './_lib/auth.js';
 import { HttpError, assertSameOrigin, cleanText, handle, json, readJson, requireUuid } from './_lib/http.js';
 import { cleanMeta, sceneRecords, toSceneRow } from './_lib/scenes.js';
-import type { RoomScript, SceneData, ScriptMeta } from './_lib/types.js';
+import type { LibraryResponse, RoomScript, SceneData, ScriptMeta } from './_lib/types.js';
 
 interface ScriptsBody {
   action: 'create' | 'delete';
   id: string;
+  roomId: string;
   title: string;
   meta: ScriptMeta;
   scenes: SceneData[];
 }
 
-async function loadScript(scriptId: string, roomId: string): Promise<RoomScript> {
+/** Scripts (with their scenes, in order) that the writer can reach, optionally just one. */
+async function loadScripts(me: Writer, scriptId?: string): Promise<RoomScript[]> {
   const sql = db();
-  const [[script], scenes] = await sql.transaction(
+  const onlyOne = scriptId ?? null;
+  const [scripts, scenes] = await sql.transaction(
     [
-      sql`select id, title, meta, version from scripts where id = ${scriptId} and room_id = ${roomId}`,
       sql`
-        select id, title, slugline, synopsis, content_html, version from scenes
-        where script_id = ${scriptId} and not deleted
-        order by position, updated_at, id
+        select s.id, s.room_id, s.title, s.meta, s.version
+        from scripts s join room_members m on m.room_id = s.room_id and m.writer_id = ${me.id}
+        where ${onlyOne}::uuid is null or s.id = ${onlyOne}::uuid
+        order by s.updated_at desc
+      `,
+      sql`
+        select c.script_id, c.id, c.title, c.slugline, c.synopsis, c.content_html, c.version
+        from scenes c
+        join scripts s on s.id = c.script_id
+        join room_members m on m.room_id = s.room_id and m.writer_id = ${me.id}
+        where not c.deleted and (${onlyOne}::uuid is null or c.script_id = ${onlyOne}::uuid)
+        order by c.script_id, c.position, c.updated_at, c.id
       `,
     ],
     { readOnly: true }
   );
-  if (!script) throw new HttpError(404, 'This script is no longer in your writers room.');
-  return {
+  return scripts.map((script) => ({
     id: String(script.id),
+    roomId: String(script.room_id),
     title: String(script.title),
     meta: (script.meta ?? {}) as ScriptMeta,
     version: toNumber(script.version),
-    scenes: scenes.map(toSceneRow),
-  };
+    scenes: scenes.filter((scene) => scene.script_id === script.id).map(toSceneRow),
+  }));
 }
 
-/** GET /api/scripts?id=… : the whole script, for opening it. */
+/**
+ * GET /api/scripts?id=… : one script, for opening it.
+ * GET /api/scripts : every script in the writer's rooms, for a new device.
+ */
 export function GET(request: Request) {
   return handle(async () => {
     const me = await requireWriter(request);
-    const id = requireUuid(new URL(request.url).searchParams.get('id'), 'script');
-    return json(await loadScript(id, me.roomId));
+    const id = new URL(request.url).searchParams.get('id');
+    if (id === null) {
+      const library: LibraryResponse = { scripts: await loadScripts(me) };
+      return json(library);
+    }
+    const [script] = await loadScripts(me, requireUuid(id, 'script'));
+    if (!script) throw new HttpError(404, 'This script is no longer in any of your rooms.');
+    return json(script);
   });
 }
 
@@ -54,13 +74,14 @@ export function POST(request: Request) {
 
     switch (body.action) {
       case 'create': {
+        const member = await requireMember(me, requireUuid(body.roomId, 'room'));
         const id = randomUUID();
         const title = cleanText(body.title, 300);
         const scenes = sceneRecords(body.scenes).map((scene, position) => ({ ...scene, position }));
         await sql.transaction([
           sql`
             insert into scripts (id, room_id, title, meta)
-            values (${id}, ${me.roomId}, ${title}, ${JSON.stringify(cleanMeta(body.meta))}::jsonb)
+            values (${id}, ${member.roomId}, ${title}, ${JSON.stringify(cleanMeta(body.meta))}::jsonb)
           `,
           sql`
             insert into scenes (script_id, id, position, title, slugline, synopsis, content_html, updated_by)
@@ -69,13 +90,16 @@ export function POST(request: Request) {
               as s(id text, position int, title text, slugline text, synopsis text, content_html text)
           `,
         ]);
-        return json(await loadScript(id, me.roomId), { status: 201 });
+        const [script] = await loadScripts(me, id);
+        return json(script, { status: 201 });
       }
 
       case 'delete': {
-        requireOwner(me);
         const id = requireUuid(body.id, 'script');
-        await sql`delete from scripts where id = ${id} and room_id = ${me.roomId}`;
+        const [script] = await sql`select room_id from scripts where id = ${id}`;
+        if (!script) return json({ ok: true });
+        requireOwner(await requireMember(me, String(script.room_id)));
+        await sql`delete from scripts where id = ${id}`;
         return json({ ok: true });
       }
 

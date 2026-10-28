@@ -53,18 +53,18 @@ Along the left edge of the page sits a column of tick marks, one per scene headi
 - **Paper themes.** **Paper**, **Sepia**, and **Night**. An inline script in `index.html` applies the saved theme before first paint so the page never flashes on reload.
 - **Typeface and measure.** The `Aa` menu switches between *Newsreader* (serif), *Plus Jakarta Sans* (sans), and *JetBrains Mono* (mono), with four font sizes and three column widths.
 
-## Writers room
+## Passkeys, sync, and writers rooms
 
-Up to three writers can work on the same script. Nobody signs up with an email:
+Focus works without an account: scripts stay on the device. A passkey adds syncing and co-writing. Nobody signs up with an email.
 
-- **Start a room.** Enter your name (and optionally a room name). Focus shows you a passkey such as `DOLLY-7K2M-9QXA` exactly once. Your name plus that passkey signs you in on any device.
-- **Invite.** The room shows an invite code such as `7K2M-9QXA-P4TD`. A writer chooses **Join a room**, enters the code and their name, and gets their own passkey. Names are unique within a room.
-- **Lost passkeys.** The person who started the room can issue a writer a new passkey (the old one stops working and signs them out everywhere), remove a writer, or replace the invite code.
-- **Scripts.** Start a new script in the room, or share a copy of the script you have open. Scripts not in a room stay on your device only.
+- **Get a passkey.** Enter your name; Focus shows a passkey such as `DOLLY-7K2M-9QXA` exactly once. Your name plus that passkey signs you in on any device (case, spaces, and dashes don't matter).
+- **Your scripts follow you.** While signed in, every script on the device is saved to your account (the sample script stays local), and new scripts are saved as you write them. Signing in on another device downloads them all, and Focus checks for changes whenever you come back to the tab. Signing out removes synced scripts from that device; they stay in your account.
+- **Writers rooms.** From your account, start a room and share its invite code with up to two other writers. Someone new to Focus chooses **Join a room**, enters the code and their name, and gets their own passkey; someone with a passkey enters the code in their account. Names are unique within a room. The person who started a room can remove writers, replace the invite code, and delete the room's scripts; anyone can share a copy of a script into the room or leave it.
+- **Lost passkeys.** On any device where you're still signed in, **New passkey** replaces it and signs out your other devices. Without a signed-in device, a lost passkey can't be recovered.
 
-Writers work scene by scene. Opening a scene holds it: the others see who is in it, watch it update every couple of seconds, and can write in other scenes. A held scene frees up when its writer moves on, closes the tab, or stops typing for ten minutes. Title, title page, and export settings sync too (the last change wins). If a writer's hold lapses during a long disconnect and someone else takes the scene, their unsent text is kept as a new scene named "(Name's version)".
+Synced scripts are written scene by scene, per device: opening a scene holds it, so another writer, or your own phone, sees it update every couple of seconds and can work on other scenes. A held scene frees up when its device moves on, closes the tab, or stops typing for ten minutes. Title, title page, and export settings sync too (the last change wins). Offline, you can keep writing; if someone else changed that scene in the meantime, your text is kept as a new scene named "(Name's version)" instead of being lost.
 
-When a room script is reopened, the room's copy replaces whatever was saved on that device.
+When a synced script is reopened on a device, the account's copy replaces whatever was saved there.
 
 ## Storage
 
@@ -101,9 +101,9 @@ All scripts and settings save locally in `localStorage` (keys prefixed `focus:`)
 - `src/components/SidebarDrawer.tsx` renders the script library drawer.
 - `src/components/DocumentOutline.tsx` renders the left-margin outline scanner.
 - `src/storage.ts` handles `localStorage` and `IndexedDB` persistence and the starter script.
-- `api/` holds the writers room's Vercel Functions: `auth.ts` (start, join, sign in, sign out), `room.ts` (writers, invite code, passkeys), `scripts.ts` (open, create, delete), and `sync.ts` (one round trip per poll: scene locks, saves, presence, and changes since the client's versions). Shared code and the API types are in `api/_lib/`.
+- `api/` holds the Vercel Functions: `auth.ts` (passkeys, sign in and out, starting and joining rooms), `room.ts` (a room's writers and invite code), `scripts.ts` (open, download all, create, delete), and `sync.ts` (one round trip per poll: scene holds, saves, presence, and changes since the client's versions). Every script lives in a room; each writer's own scripts are in their personal room. Shared code and the API types are in `api/_lib/`.
 - `db/schema.sql` is the Postgres schema; `npm run db:migrate` applies it.
-- `src/room/` is the client side: `api.ts` calls the functions, `RoomSync.ts` pushes local edits and merges remote ones, and `useRoomSync.ts` runs it for the open script. `src/components/WritersRoomDialog.tsx` is the room UI.
+- `src/room/` is the client side: `api.ts` calls the functions and remembers the account for offline use, `RoomSync.ts` pushes local edits and merges remote ones, and `useRoomSync.ts` runs it for the open script. `src/components/WritersRoomDialog.tsx` is the account and writers room panel.
 
 ## Running locally
 
@@ -114,7 +114,7 @@ npm install
 npm run dev
 ```
 
-The writers room needs the Neon Postgres database connected to the `focus` Vercel project. `npm run dev` serves `api/*.ts` itself and reads the connection string from `.env.local`:
+Passkeys and sync need the Neon Postgres database connected to the `focus` Vercel project. `npm run dev` serves `api/*.ts` itself and reads the connection string from `.env.local`:
 
 ```bash
 vercel link --project focus   # once
@@ -123,6 +123,8 @@ npm run db:migrate            # create or update the tables
 ```
 
 Functions run in London (`lhr1`, in `vercel.json`), next to the database.
+
+The pulled `DATABASE_URL` is the live site's database, so accounts and scripts created while developing locally appear in production. For a separate development database, create a Neon branch and put its URL in `.env.local`.
 
 Build the production bundle:
 

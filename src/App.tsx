@@ -43,11 +43,11 @@ import { ShortcutsModal } from './components/ShortcutsModal';
 import { WelcomeHome } from './components/WelcomeHome';
 import { WritersRoomDialog } from './components/WritersRoomDialog';
 import { WriterAvatar } from './components/WriterAvatar';
-import { roomApi } from './room/api';
-import { roomDocId, roomScriptToDocument } from './room/convert';
+import { CLIENT_ID, loadCachedSession, roomApi, saveCachedSession } from './room/api';
+import { documentMeta, roomDocId, roomScriptToDocument, unitToScene } from './room/convert';
 import { useRoomSync } from './room/useRoomSync';
-import type { DocUpdate } from './room/RoomSync';
-import type { RoomScript, SessionResponse } from '../api/_lib/types';
+import { primeBaseline, type DocUpdate } from './room/RoomSync';
+import type { RoomScript, RoomWriter, SessionResponse } from '../api/_lib/types';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<WriterSettings>(() => loadSettings());
@@ -67,7 +67,7 @@ export const App: React.FC = () => {
   const closeScreenplayExport = useCallback(() => setScreenplayExportOpen(false), []);
   const [isTyping, setIsTyping] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved');
-  const [roomSession, setRoomSession] = useState<SessionResponse | null>(null);
+  const [account, setAccount] = useState<SessionResponse | null>(() => loadCachedSession());
   const [writersRoomOpen, setWritersRoomOpen] = useState(false);
 
   const lastPointerPos = useRef<{ x: number; y: number } | null>(null);
@@ -445,6 +445,13 @@ export const App: React.FC = () => {
 
   const handleDeleteDoc = useCallback(
     (id: string) => {
+      // Your own synced scripts are deleted from your account too; shared room
+      // scripts are only deleted for everyone from the writers room panel
+      const doc = documents.find((d) => d.id === id);
+      const personal = doc?.room && account?.rooms.find((r) => r.id === doc.room?.roomId)?.personal;
+      if (doc?.room && personal && documents.length > 1) {
+        roomApi.deleteScript(doc.room.scriptId).catch(() => {});
+      }
       setDocuments((prev) => {
         if (prev.length <= 1) return prev;
         const next = prev.filter((d) => d.id !== id);
@@ -456,10 +463,19 @@ export const App: React.FC = () => {
         return next;
       });
     },
-    [activeDoc.id, persistDocs]
+    [activeDoc.id, persistDocs, documents, account]
   );
 
-  // Writers room: scripts shared through the database
+  // Accounts and writers rooms: scripts synced through the database
+  const activeDocIdRef = useRef(activeDoc.id);
+  activeDocIdRef.current = activeDoc.id;
+  const lastLibraryRefreshRef = useRef(0);
+
+  const updateAccount = useCallback((session: SessionResponse | null) => {
+    setAccount(session);
+    saveCachedSession(session);
+  }, []);
+
   const dropRoomDocuments = useCallback(
     (scriptId?: string) => {
       setDocuments((prev) => {
@@ -473,28 +489,99 @@ export const App: React.FC = () => {
     [persistDocs]
   );
 
+  /** Brings every script in the writer's account and rooms onto this device. */
+  const refreshLibrary = useCallback(async () => {
+    lastLibraryRefreshRef.current = Date.now();
+    let scripts: RoomScript[];
+    try {
+      const [session, library] = await Promise.all([roomApi.session(), roomApi.library()]);
+      updateAccount(session);
+      scripts = library.scripts;
+    } catch {
+      return;
+    }
+    setDocuments((prev) => {
+      const isActive = (scriptId: string) =>
+        prev.find((d) => d.room?.scriptId === scriptId)?.id === activeDocIdRef.current;
+      // Scripts deleted, or in rooms the writer has left, go away
+      const reachable = new Set(scripts.map((script) => script.id));
+      let next = prev.filter((d) => !d.room || reachable.has(d.room.scriptId));
+      for (const script of scripts) {
+        // The open script is live already; its sync keeps it current
+        if (isActive(script.id)) continue;
+        const existing = next.find((d) => d.room?.scriptId === script.id);
+        primeBaseline(script);
+        const doc = roomScriptToDocument(script, existing);
+        next = existing ? next.map((d) => (d === existing ? doc : d)) : [...next, doc];
+      }
+      if (next.length === 0) next = [createNewWorkItem('Untitled screenplay')];
+      persistDocs(next);
+      return next;
+    });
+  }, [persistDocs, updateAccount]);
+
   useEffect(() => {
-    // Offline: keep room scripts on this device until the room can be reached
     roomApi
       .session()
       .then((session) => {
-        setRoomSession(session);
-        // Signed out: room scripts left on this device can't sync, so drop them
-        if (!session) dropRoomDocuments();
+        updateAccount(session);
+        if (session) void refreshLibrary();
+        // Signed out elsewhere: synced scripts can't sync here any more
+        else dropRoomDocuments();
       })
+      // Offline: keep the remembered account so synced scripts stay usable
       .catch(() => {});
-  }, [dropRoomDocuments]);
+  }, [updateAccount, refreshLibrary, dropRoomDocuments]);
+
+  // Coming back to Focus (perhaps after writing on another device): fetch what changed
+  useEffect(() => {
+    if (!account) return;
+    const handleVisible = () => {
+      if (!document.hidden && Date.now() - lastLibraryRefreshRef.current > 30_000) void refreshLibrary();
+    };
+    document.addEventListener('visibilitychange', handleVisible);
+    return () => document.removeEventListener('visibilitychange', handleVisible);
+  }, [account, refreshLibrary]);
+
+  // Signed in, every script on this device is saved to the writer's account
+  // (except the sample). The document keeps its id, so the editor isn't disturbed.
+  const personalRoomId = account?.rooms.find((r) => r.personal)?.id;
+  const uploadAttemptsRef = useRef(new Map<string, number>());
+  useEffect(() => {
+    if (!personalRoomId) return;
+    for (const doc of documents) {
+      if (doc.room || doc.id === STARTER_SCREENPLAY.id) continue;
+      const lastAttempt = uploadAttemptsRef.current.get(doc.id);
+      if (lastAttempt !== undefined && Date.now() - lastAttempt < 30_000) continue;
+      uploadAttemptsRef.current.set(doc.id, Date.now());
+      roomApi
+        .createScript(personalRoomId, doc.title, documentMeta(doc), (doc.units ?? []).map(unitToScene))
+        .then((script) => {
+          // Anything typed during the upload differs from this copy and syncs as an edit
+          primeBaseline(script);
+          setDocuments((prev) => {
+            const next = prev.map((d) =>
+              d.id === doc.id ? { ...d, room: { roomId: script.roomId, scriptId: script.id } } : d
+            );
+            persistDocs(next);
+            return next;
+          });
+        })
+        .catch(() => {});
+    }
+  }, [documents, personalRoomId, persistDocs]);
 
   const handleOpenRoomScript = useCallback(
     (script: RoomScript) => {
-      if (!roomSession) return;
-      const id = roomDocId(script.id);
-      // An open room script is already live; only refresh copies that aren't syncing
+      const existing = documents.find((d) => d.room?.scriptId === script.id);
+      const id = existing?.id ?? roomDocId(script.id);
+      // An open script is already live; only refresh copies that aren't syncing
       if (id !== activeDoc.id) {
+        primeBaseline(script);
         setDocuments((prev) => {
-          const existing = prev.find((d) => d.id === id);
-          const doc = roomScriptToDocument(script, roomSession.room.id, existing);
-          const next = existing ? prev.map((d) => (d.id === id ? doc : d)) : [doc, ...prev];
+          const current = prev.find((d) => d.room?.scriptId === script.id);
+          const doc = roomScriptToDocument(script, current);
+          const next = current ? prev.map((d) => (d === current ? doc : d)) : [doc, ...prev];
           persistDocs(next);
           return next;
         });
@@ -505,7 +592,7 @@ export const App: React.FC = () => {
       setWritersRoomOpen(false);
       handleLeaveHome();
     },
-    [roomSession, activeDoc.id, persistDocs, handleLeaveHome]
+    [documents, activeDoc.id, persistDocs, handleLeaveHome]
   );
 
   const handleRemoteUpdate = useCallback(
@@ -519,12 +606,17 @@ export const App: React.FC = () => {
     [persistDocs]
   );
 
-  // Sync only scripts from the room this writer is signed in to
-  const roomMe =
-    roomSession && activeDoc.room?.roomId === roomSession.room.id ? roomSession.me : null;
+  // Sync scripts from rooms this writer belongs to
+  const docMembership = activeDoc.room
+    ? account?.rooms.find((r) => r.id === activeDoc.room?.roomId)
+    : undefined;
+  const roomMe: RoomWriter | null =
+    account && docMembership
+      ? { id: account.me.id, name: account.me.name, role: docMembership.role, color: docMembership.color }
+      : null;
   const roomSceneId =
     activeDoc.room && viewMode === 'write' && !showHome ? activeUnit?.id ?? null : null;
-  const { state: roomSync, keepWriting } = useRoomSync({
+  const { state: roomSync, keepWriting, release: releaseRoomSync } = useRoomSync({
     doc: activeDoc,
     me: roomMe,
     sceneId: roomSceneId,
@@ -534,34 +626,63 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (roomSync?.status === 'signed-out') {
-      // Their passkey was reissued or they were removed from the room
-      setRoomSession(null);
+      // A new passkey was made on another device, so this one was signed out
+      updateAccount(null);
       dropRoomDocuments();
       setWritersRoomOpen(true);
     } else if (roomSync?.status === 'gone' && activeDoc.room) {
+      // Deleted, or the writer is no longer in its room
       dropRoomDocuments(activeDoc.room.scriptId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomSync?.status]);
 
+  const handleSignOut = useCallback(async () => {
+    // Send any last edits and free the open scene first: signing out removes
+    // synced scripts from this device, and the server refuses requests after
+    await releaseRoomSync();
+    await roomApi.signOut().catch(() => {});
+    updateAccount(null);
+    dropRoomDocuments();
+  }, [releaseRoomSync, updateAccount, dropRoomDocuments]);
+
   const roomWriterById = (id: string | undefined) =>
     id ? roomSync?.writers.find((w) => w.id === id) : undefined;
 
+  const linkClass =
+    'font-medium text-[var(--ink-1)] underline decoration-[var(--border-strong)] underline-offset-2 hover:decoration-[var(--ink-1)]';
+  const syncStatus = roomSync?.status ?? 'connecting';
   let editorReadOnly = false;
   let editorNotice: React.ReactNode = null;
   if (activeDoc.room && activeUnit) {
-    const holder = roomWriterById(roomSync?.locks[activeUnit.id]);
-    editorReadOnly = roomSync?.heldSceneId !== activeUnit.id;
-    if (!roomMe) {
+    const lock = roomSync?.locks[activeUnit.id];
+    const lockedElsewhere = !!lock && !(lock.writerId === account?.me.id && lock.clientId === CLIENT_ID);
+    const heldHere = roomSync?.heldSceneId === activeUnit.id;
+    // Before the first answer, or offline, write freely unless we know another tab
+    // holds the scene; anything refused later is kept as a copy
+    const optimistic = (syncStatus === 'connecting' || syncStatus === 'offline') && !lockedElsewhere;
+    editorReadOnly = !roomMe || !(heldHere || optimistic);
+    const holder = lockedElsewhere ? roomWriterById(lock?.writerId) : undefined;
+
+    if (!account) {
       editorNotice = (
         <span className="min-w-0">
-          This is a writers room script. Sign in to the room to keep working on it.{' '}
-          <button type="button" onClick={() => setWritersRoomOpen(true)} className="font-medium text-[var(--ink-1)] underline decoration-[var(--border-strong)] underline-offset-2 hover:decoration-[var(--ink-1)]">
-            Open the writers room
+          This script is synced to a Focus account. Sign in with your passkey to keep working on it.{' '}
+          <button type="button" onClick={() => setWritersRoomOpen(true)} className={linkClass}>
+            Sign in
           </button>
         </span>
       );
-    } else if (holder && holder.id !== roomMe.id) {
+    } else if (!roomMe) {
+      editorNotice = <span>You’re no longer in the writers room this script belongs to.</span>;
+    } else if (lockedElsewhere && lock?.writerId === account.me.id) {
+      editorNotice = (
+        <span>
+          You’re writing this scene in another tab or on another device. Move to a different scene
+          there to write here.
+        </span>
+      );
+    } else if (holder) {
       editorNotice = (
         <>
           <WriterAvatar writer={holder} size="sm" />
@@ -574,23 +695,35 @@ export const App: React.FC = () => {
     } else if (roomSync?.idle) {
       editorNotice = (
         <span className="min-w-0">
-          You stepped away, so this scene is open to the others.{' '}
-          <button type="button" onClick={keepWriting} className="font-medium text-[var(--ink-1)] underline decoration-[var(--border-strong)] underline-offset-2 hover:decoration-[var(--ink-1)]">
+          You stepped away, so this scene is free for your other devices and writers.{' '}
+          <button type="button" onClick={keepWriting} className={linkClass}>
             Keep writing
           </button>
         </span>
       );
-    } else if (roomSync?.status === 'offline') {
+    } else if (syncStatus === 'offline') {
       editorNotice = <span>You’re offline. Keep writing; your changes sync when you reconnect.</span>;
     }
   }
 
+  // Other writers in this script (this writer's other devices aren't shown)
   const roomCollaborators = (roomSync?.presence ?? []).flatMap((p) => {
     const writer = roomWriterById(p.writerId);
-    if (!writer) return [];
+    if (!writer || writer.id === account?.me.id) return [];
     const index = activeDoc.units?.findIndex((u) => u.id === p.sceneId) ?? -1;
     return [{ writer, where: index >= 0 ? `Scene ${index + 1}` : 'Viewing the script' }];
-  });
+  }).filter((c, i, all) => all.findIndex((other) => other.writer.id === c.writer.id) === i);
+
+  const syncLabel = activeDoc.room
+    ? syncStatus === 'live'
+      ? 'Synced'
+      : syncStatus === 'offline'
+      ? 'Offline'
+      : 'Syncing…'
+    : undefined;
+  const accountBadge = account
+    ? { name: account.me.name, color: account.rooms.find((r) => r.personal)?.color ?? 'butter' }
+    : null;
 
   // Restore UI chrome when mouse moves purposefully
   useEffect(() => {
@@ -752,7 +885,9 @@ export const App: React.FC = () => {
           <TopBar
             onOpenHome={handleOpenHome}
             onOpenWritersRoom={() => setWritersRoomOpen(true)}
+            account={accountBadge}
             collaborators={activeDoc.room ? roomCollaborators : undefined}
+            statusLabel={syncLabel}
             isTyping={isTyping && viewMode === 'write'}
             sidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -930,12 +1065,12 @@ export const App: React.FC = () => {
       <WritersRoomDialog
         open={writersRoomOpen}
         onClose={() => setWritersRoomOpen(false)}
-        session={roomSession}
-        onSession={setRoomSession}
-        onSignOut={() => {
-          setRoomSession(null);
-          dropRoomDocuments();
+        account={account}
+        onAccount={(session) => {
+          updateAccount(session);
+          void refreshLibrary();
         }}
+        onSignOut={handleSignOut}
         activeDoc={activeDoc}
         onOpenScript={handleOpenRoomScript}
         onScriptDeleted={(scriptId) => dropRoomDocuments(scriptId)}

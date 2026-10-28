@@ -1,4 +1,5 @@
 import type {
+  LibraryResponse,
   RoomDetails,
   RoomScript,
   SceneData,
@@ -18,7 +19,46 @@ export class RoomApiError extends Error {
   }
 }
 
-async function call<T>(path: string, body?: unknown): Promise<T> {
+/** Identifies this tab across reloads, so a writer's devices hold scenes separately. */
+export const CLIENT_ID = (() => {
+  try {
+    const saved = sessionStorage.getItem('focus:client-id');
+    if (saved) return saved;
+    const id = crypto.randomUUID();
+    sessionStorage.setItem('focus:client-id', id);
+    return id;
+  } catch {
+    return crypto.randomUUID();
+  }
+})();
+
+const ACCOUNT_KEY = 'focus:account';
+
+/** The last known session, so synced scripts stay usable offline. */
+export function loadCachedSession(): SessionResponse | null {
+  try {
+    const raw = localStorage.getItem(ACCOUNT_KEY);
+    return raw ? (JSON.parse(raw) as SessionResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCachedSession(session: SessionResponse | null): void {
+  try {
+    if (session) {
+      // Never keep the passkey itself
+      const { passkey: _passkey, ...rest } = session;
+      localStorage.setItem(ACCOUNT_KEY, JSON.stringify(rest));
+    } else {
+      localStorage.removeItem(ACCOUNT_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+async function call<T>(path: string, body?: unknown, keepalive = false): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, {
@@ -26,13 +66,14 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
       credentials: 'same-origin',
       headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
+      keepalive,
     });
   } catch {
-    throw new RoomApiError(0, 'Can’t reach the writers room. Check your connection.');
+    throw new RoomApiError(0, 'Can’t reach Focus. Check your connection.');
   }
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) {
-    throw new RoomApiError(res.status, data.error ?? 'Something went wrong. Try again.');
+    throw new RoomApiError(res.status, data?.error ?? 'Something went wrong. Try again.');
   }
   return data;
 }
@@ -40,31 +81,36 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 export const roomApi = {
   /** The signed-in writer, or null. */
   session: () => call<SessionResponse | null>('/api/auth'),
-  createRoom: (roomName: string, name: string) =>
-    call<SessionResponse>('/api/auth', { action: 'create-room', roomName, name }),
-  join: (inviteCode: string, name: string) =>
-    call<SessionResponse>('/api/auth', { action: 'join', inviteCode, name }),
+  createAccount: (name: string) => call<SessionResponse>('/api/auth', { action: 'create-account', name }),
   signIn: (name: string, passkey: string) =>
     call<SessionResponse>('/api/auth', { action: 'sign-in', name, passkey }),
+  /** Signed out, this also creates the writer's account. */
+  join: (inviteCode: string, name?: string) =>
+    call<SessionResponse>('/api/auth', { action: 'join', inviteCode, name }),
+  createRoom: (roomName: string) => call<SessionResponse>('/api/auth', { action: 'create-room', roomName }),
+  newPasskey: () => call<SessionResponse>('/api/auth', { action: 'new-passkey' }),
   signOut: () => call<{ ok: true }>('/api/auth', { action: 'sign-out' }),
 
-  details: () => call<RoomDetails>('/api/room'),
-  renameRoom: (name: string) => call<{ ok: true }>('/api/room', { action: 'rename', name }),
-  newInvite: () => call<{ inviteCode: string }>('/api/room', { action: 'new-invite' }),
-  reissuePasskey: (writerId: string) =>
-    call<{ passkey: string }>('/api/room', { action: 'reissue-passkey', writerId }),
-  removeWriter: (writerId: string) =>
-    call<{ ok: true }>('/api/room', { action: 'remove-writer', writerId }),
+  details: (roomId: string) => call<RoomDetails>(`/api/room?id=${encodeURIComponent(roomId)}`),
+  newInvite: (roomId: string) => call<{ inviteCode: string }>('/api/room', { roomId, action: 'new-invite' }),
+  removeWriter: (roomId: string, writerId: string) =>
+    call<{ ok: true }>('/api/room', { roomId, action: 'remove-writer', writerId }),
+  leaveRoom: (roomId: string) => call<{ ok: true }>('/api/room', { roomId, action: 'leave' }),
 
+  library: () => call<LibraryResponse>('/api/scripts'),
   getScript: (id: string) => call<RoomScript>(`/api/scripts?id=${encodeURIComponent(id)}`),
-  createScript: (title: string, meta: ScriptMeta, scenes: SceneData[]) =>
-    call<RoomScript>('/api/scripts', { action: 'create', title, meta, scenes }),
+  createScript: (roomId: string, title: string, meta: ScriptMeta, scenes: SceneData[]) =>
+    call<RoomScript>('/api/scripts', { action: 'create', roomId, title, meta, scenes }),
   deleteScript: (id: string) => call<{ ok: true }>('/api/scripts', { action: 'delete', id }),
 
-  sync: (request: SyncRequest) => call<SyncResponse>('/api/sync', request),
-  /** Fire-and-forget on tab close, so this writer's scene frees up right away. */
+  sync: (request: Omit<SyncRequest, 'clientId'>, keepalive = false) =>
+    call<SyncResponse>('/api/sync', { ...request, clientId: CLIENT_ID }, keepalive),
+  /** Frees this tab's scene and presence, and waits for it (e.g. before signing out). */
+  leaveNow: (scriptId: string) =>
+    call<{ ok: true }>('/api/sync', { scriptId, clientId: CLIENT_ID, leave: true }),
+  /** Fire-and-forget: frees this tab's scene and presence right away. */
   leave: (scriptId: string) => {
-    const body = JSON.stringify({ scriptId, leave: true });
+    const body = JSON.stringify({ scriptId, clientId: CLIENT_ID, leave: true });
     if (!navigator.sendBeacon?.('/api/sync', new Blob([body], { type: 'application/json' }))) {
       fetch('/api/sync', { method: 'POST', body, keepalive: true, headers: { 'Content-Type': 'application/json' } }).catch(() => {});
     }

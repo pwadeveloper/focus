@@ -1,8 +1,9 @@
-/** Shapes shared by the writers room API (api/) and the client (src/room/). */
+/** Shapes shared by the API (api/) and the client (src/room/). */
 
 export type WriterRole = 'owner' | 'writer';
 export type WriterColor = 'butter' | 'sage' | 'blush' | 'lavender' | 'sky';
 
+/** A writer as seen inside one room (role and color are per room). */
 export interface RoomWriter {
   id: string;
   name: string;
@@ -10,14 +11,19 @@ export interface RoomWriter {
   color: WriterColor;
 }
 
-export interface RoomInfo {
+/** A room the signed-in writer belongs to. */
+export interface Membership {
   id: string;
   name: string;
+  /** The writer's own scripts, synced across their devices */
+  personal: boolean;
+  role: WriterRole;
+  color: WriterColor;
 }
 
 export interface SessionResponse {
-  me: RoomWriter;
-  room: RoomInfo;
+  me: { id: string; name: string };
+  rooms: Membership[];
   /** Only present right after a passkey is created; it is never shown again. */
   passkey?: string;
 }
@@ -31,7 +37,14 @@ export interface RoomScriptSummary {
 
 export interface RoomDetails {
   me: RoomWriter;
-  room: RoomInfo & { inviteCode: string; maxWriters: number };
+  room: {
+    id: string;
+    name: string;
+    personal: boolean;
+    /** Shared rooms only */
+    inviteCode: string | null;
+    maxWriters: number;
+  };
   writers: RoomWriter[];
   scripts: RoomScriptSummary[];
 }
@@ -57,11 +70,17 @@ export type ScriptMeta = Record<string, unknown>;
 
 export interface RoomScript {
   id: string;
+  roomId: string;
   title: string;
   meta: ScriptMeta;
   version: number;
   /** In script order */
   scenes: SceneRow[];
+}
+
+/** Every script in every room the writer belongs to. */
+export interface LibraryResponse {
+  scripts: RoomScript[];
 }
 
 export interface SyncChanges {
@@ -77,15 +96,17 @@ export interface SyncChanges {
 
 export interface SyncRequest {
   scriptId: string;
-  /** The scene this writer is looking at, or null outside the editor */
+  /** Identifies this tab, so one writer's devices hold scenes separately */
+  clientId: string;
+  /** The scene this tab is showing, or null outside the editor */
   sceneId: string | null;
-  /** Take (or keep) the lock on sceneId so only this writer can change it */
+  /** Take (or keep) the hold on sceneId so only this tab can change it */
   wantLock: boolean;
   /** Scene id to version for every scene the client has */
   known: Record<string, number>;
   knownScriptVersion: number;
   changes?: SyncChanges;
-  /** Leaving the script: drop this writer's lock and presence */
+  /** Leaving the script: drop this tab's hold and presence */
   leave?: boolean;
 }
 
@@ -96,16 +117,17 @@ export interface SyncResponse {
   scenes: SceneRow[];
   /** Accepted scene writes, with their new versions */
   saved: Record<string, number>;
-  /** Writes refused because another writer holds the scene */
+  /** Writes refused because another tab holds the scene */
   rejected: string[];
   /** Present when the script's title or meta changed */
   script: { title: string; meta: ScriptMeta; version: number } | null;
   savedScriptVersion: number | null;
-  locks: { sceneId: string; writerId: string }[];
-  presence: { writerId: string; sceneId: string | null }[];
+  locks: { sceneId: string; writerId: string; clientId: string }[];
+  presence: { writerId: string; clientId: string; sceneId: string | null }[];
   writers: RoomWriter[];
-  /** Whether this writer holds the lock on `sceneId` */
+  /** Whether this tab holds the lock on `sceneId` */
   lockHeld: boolean;
 }
 
+/** Writers in a shared room, including the one who started it. */
 export const MAX_WRITERS_PER_ROOM = 3;

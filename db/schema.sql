@@ -1,25 +1,35 @@
--- Writers rooms: scripts shared by a few writers. Each writer signs in with
--- their name and a generated passkey; only a SHA-256 hash of it is stored.
+-- Focus accounts and writers rooms. A writer is a person: their name plus a
+-- generated passkey signs them in on any device (only a SHA-256 hash of the
+-- passkey is stored). Every script lives in a room: each writer's personal
+-- room holds their own scripts, and shared rooms hold up to three writers.
 -- Safe to re-run: `npm run db:migrate`.
+
+create table if not exists writers (
+  id uuid primary key,
+  name text not null,
+  passkey_hash text not null unique,
+  created_at timestamptz not null default now()
+);
 
 create table if not exists rooms (
   id uuid primary key,
   name text not null,
-  invite_code text not null unique,
+  -- A writer's own scripts: one member, no invite code
+  personal boolean not null default false,
+  invite_code text unique,
   created_at timestamptz not null default now()
 );
 
-create table if not exists writers (
-  id uuid primary key,
+create table if not exists room_members (
   room_id uuid not null references rooms(id) on delete cascade,
-  name text not null,
-  passkey_hash text not null unique,
-  role text not null default 'writer' check (role in ('owner', 'writer')),
+  writer_id uuid not null references writers(id) on delete cascade,
+  role text not null check (role in ('owner', 'writer')),
   color text not null,
-  created_at timestamptz not null default now()
+  joined_at timestamptz not null default now(),
+  primary key (room_id, writer_id)
 );
 
-create unique index if not exists writers_room_name_idx on writers (room_id, lower(name));
+create index if not exists room_members_writer_idx on room_members (writer_id);
 
 create table if not exists sessions (
   token_hash text primary key,
@@ -53,7 +63,7 @@ create table if not exists scenes (
   slugline text,
   synopsis text,
   content_html text not null default '',
-  -- Deleted scenes stay as tombstones so every writer hears about the delete
+  -- Deleted scenes stay as tombstones so every device hears about the delete
   deleted boolean not null default false,
   updated_by uuid references writers(id) on delete set null,
   updated_at timestamptz not null default now(),
@@ -61,21 +71,25 @@ create table if not exists scenes (
   primary key (script_id, id)
 );
 
--- The writer holding a scene is the only one who can change it until the
--- lock expires (it is renewed every few seconds while they are in it)
+-- The tab holding a scene is the only place it can change until the lock
+-- expires (renewed every few seconds). Holds are per tab, not per writer,
+-- so one writer's laptop and phone can't overwrite each other.
 create table if not exists scene_locks (
   script_id uuid not null references scripts(id) on delete cascade,
   scene_id text not null,
   writer_id uuid not null references writers(id) on delete cascade,
+  client_id text not null,
   expires_at timestamptz not null,
   primary key (script_id, scene_id)
 );
 
-create index if not exists scene_locks_writer_idx on scene_locks (writer_id);
+create index if not exists scene_locks_holder_idx on scene_locks (writer_id, client_id);
 
 create table if not exists presence (
-  writer_id uuid primary key references writers(id) on delete cascade,
-  script_id uuid references scripts(id) on delete cascade,
+  writer_id uuid not null references writers(id) on delete cascade,
+  client_id text not null,
+  script_id uuid not null references scripts(id) on delete cascade,
   scene_id text,
-  seen_at timestamptz not null default now()
+  seen_at timestamptz not null default now(),
+  primary key (writer_id, client_id)
 );

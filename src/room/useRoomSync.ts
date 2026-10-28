@@ -54,6 +54,10 @@ export function useRoomSync({ doc, me, sceneId, wantLock, onRemote }: UseRoomSyn
   }, [sceneId, wantLock, scriptId]);
 
   const keepWriting = useCallback(() => engineRef.current?.keepWriting(), []);
+  /** Sends pending edits and frees this tab's scene; resolves when done (or the attempt failed). */
+  const release = useCallback(async () => {
+    await engineRef.current?.release();
+  }, []);
 
-  return { state, keepWriting };
+  return { state, keepWriting, release };
 }

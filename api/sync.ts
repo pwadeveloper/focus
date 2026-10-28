@@ -23,15 +23,23 @@ export function POST(request: Request) {
     const me = await requireWriter(request);
     const body = await readJson<SyncRequest>(request);
     const scriptId = requireUuid(body.scriptId, 'script');
+    // A random id per tab; holds and presence belong to a tab, not just a writer
+    const clientId = cleanText(body.clientId, 64);
+    if (!clientId) throw new HttpError(400, 'Missing client id.');
     const sql = db();
 
-    const [script] = await sql`select id from scripts where id = ${scriptId} and room_id = ${me.roomId}`;
-    if (!script) throw new HttpError(404, 'This script is no longer in your writers room.');
+    const [script] = await sql`
+      select s.room_id from scripts s
+      join room_members m on m.room_id = s.room_id and m.writer_id = ${me.id}
+      where s.id = ${scriptId}
+    `;
+    if (!script) throw new HttpError(404, 'This script is no longer in any of your rooms.');
+    const roomId = String(script.room_id);
 
     if (body.leave) {
       await sql.transaction([
-        sql`delete from scene_locks where writer_id = ${me.id} and script_id = ${scriptId}`,
-        sql`delete from presence where writer_id = ${me.id} and script_id = ${scriptId}`,
+        sql`delete from scene_locks where writer_id = ${me.id} and client_id = ${clientId} and script_id = ${scriptId}`,
+        sql`delete from presence where writer_id = ${me.id} and client_id = ${clientId}`,
       ]);
       return json({ ok: true });
     }
@@ -54,19 +62,21 @@ export function POST(request: Request) {
     if (wantLock) {
       // Take the scene if it's free, already ours, or its holder went quiet
       lockIndex = writes.push(sql`
-        insert into scene_locks (script_id, scene_id, writer_id, expires_at)
-        values (${scriptId}, ${sceneId}, ${me.id}, now() + make_interval(secs => ${LOCK_SECONDS}::int))
+        insert into scene_locks (script_id, scene_id, writer_id, client_id, expires_at)
+        values (${scriptId}, ${sceneId}, ${me.id}, ${clientId}, now() + make_interval(secs => ${LOCK_SECONDS}::int))
         on conflict (script_id, scene_id) do update
-          set writer_id = excluded.writer_id, expires_at = excluded.expires_at
-          where scene_locks.writer_id = excluded.writer_id or scene_locks.expires_at < now()
+          set writer_id = excluded.writer_id, client_id = excluded.client_id, expires_at = excluded.expires_at
+          where (scene_locks.writer_id = excluded.writer_id and scene_locks.client_id = excluded.client_id)
+            or scene_locks.expires_at < now()
         returning writer_id
       `) - 1;
       writes.push(sql`
         delete from scene_locks
-        where writer_id = ${me.id} and not (script_id = ${scriptId} and scene_id = ${sceneId})
+        where writer_id = ${me.id} and client_id = ${clientId}
+          and not (script_id = ${scriptId} and scene_id = ${sceneId})
       `);
     } else {
-      writes.push(sql`delete from scene_locks where writer_id = ${me.id}`);
+      writes.push(sql`delete from scene_locks where writer_id = ${me.id} and client_id = ${clientId}`);
     }
 
     if (scenes.length > 0) {
@@ -80,8 +90,8 @@ export function POST(request: Request) {
           as s(id text, title text, slugline text, synopsis text, content_html text)
         where not exists (
           select 1 from scene_locks l
-          where l.script_id = ${scriptId} and l.scene_id = s.id
-            and l.writer_id <> ${me.id} and l.expires_at > now()
+          where l.script_id = ${scriptId} and l.scene_id = s.id and l.expires_at > now()
+            and (l.writer_id <> ${me.id} or l.client_id <> ${clientId})
         )
         on conflict (script_id, id) do update set
           title = excluded.title,
@@ -102,8 +112,8 @@ export function POST(request: Request) {
         where script_id = ${scriptId} and id = any(${deleted}::text[]) and not deleted
           and not exists (
             select 1 from scene_locks l
-            where l.script_id = scenes.script_id and l.scene_id = scenes.id
-              and l.writer_id <> ${me.id} and l.expires_at > now()
+            where l.script_id = scenes.script_id and l.scene_id = scenes.id and l.expires_at > now()
+              and (l.writer_id <> ${me.id} or l.client_id <> ${clientId})
           )
         returning id
       `) - 1;
@@ -134,9 +144,9 @@ export function POST(request: Request) {
     }
 
     writes.push(sql`
-      insert into presence (writer_id, script_id, scene_id, seen_at)
-      values (${me.id}, ${scriptId}, ${sceneId}, now())
-      on conflict (writer_id) do update
+      insert into presence (writer_id, client_id, script_id, scene_id, seen_at)
+      values (${me.id}, ${clientId}, ${scriptId}, ${sceneId}, now())
+      on conflict (writer_id, client_id) do update
         set script_id = excluded.script_id, scene_id = excluded.scene_id, seen_at = now()
     `);
 
@@ -172,12 +182,17 @@ export function POST(request: Request) {
               or id = any(${rejected}::text[]))
         `,
         sql`select title, meta, version from scripts where id = ${scriptId} and version <> ${knownScriptVersion}::bigint`,
-        sql`select scene_id, writer_id from scene_locks where script_id = ${scriptId} and expires_at > now()`,
+        sql`select scene_id, writer_id, client_id from scene_locks where script_id = ${scriptId} and expires_at > now()`,
         sql`
-          select writer_id, scene_id from presence
+          select writer_id, client_id, scene_id from presence
           where script_id = ${scriptId} and seen_at > now() - make_interval(secs => ${LOCK_SECONDS}::int)
         `,
-        sql`select id, name, role, color from writers where room_id = ${me.roomId} order by created_at`,
+        sql`
+          select w.id, w.name, m.role, m.color
+          from room_members m join writers w on w.id = m.writer_id
+          where m.room_id = ${roomId}
+          order by m.joined_at
+        `,
       ],
       { readOnly: true }
     );
@@ -195,9 +210,14 @@ export function POST(request: Request) {
           }
         : null,
       savedScriptVersion,
-      locks: locks.map((row) => ({ sceneId: String(row.scene_id), writerId: String(row.writer_id) })),
+      locks: locks.map((row) => ({
+        sceneId: String(row.scene_id),
+        writerId: String(row.writer_id),
+        clientId: String(row.client_id),
+      })),
       presence: presence.map((row) => ({
         writerId: String(row.writer_id),
+        clientId: String(row.client_id),
         sceneId: (row.scene_id as string | null) ?? null,
       })),
       writers: writers.map(toRoomWriter),

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
-import { Check, Copy, LogOut, Plus, Share2, X } from 'lucide-react';
+import { ArrowLeft, Check, ChevronRight, Copy, LogOut, Plus, Share2, X } from 'lucide-react';
 import type { DocumentItem } from '../types';
 import type { RoomDetails, RoomScript, SessionResponse } from '../../api/_lib/types';
 import { roomApi } from '../room/api';
@@ -11,32 +11,42 @@ import { canHover, prefersReducedMotion } from '../motion';
 interface WritersRoomDialogProps {
   open: boolean;
   onClose: () => void;
-  session: SessionResponse | null;
-  onSession: (session: SessionResponse) => void;
-  onSignOut: () => void;
-  /** The open script, offered for sharing when it isn't in the room yet */
+  account: SessionResponse | null;
+  onAccount: (session: SessionResponse) => void;
+  onSignOut: () => Promise<void>;
+  /** The open script, offered for sharing into a room */
   activeDoc: DocumentItem;
   onOpenScript: (script: RoomScript) => void;
   onScriptDeleted: (scriptId: string) => void;
 }
 
-type Mode = 'sign-in' | 'join' | 'start';
+type Mode = 'sign-in' | 'create' | 'join';
+type View = { kind: 'account' } | { kind: 'room'; roomId: string };
 
 const fieldClass =
   'h-10 w-full rounded-xl px-3 text-base text-[var(--ink-1)] transition-[box-shadow,background-color] duration-150 ease-out placeholder:text-[var(--ink-4)] focus:bg-[var(--bg-elevated)] focus:shadow-[inset_0_0_0_1px_var(--border-strong)] focus:outline-none sm:text-[13px]';
+const codeFieldClass = `${fieldClass} font-mono tracking-[0.06em]`;
 const labelClass = 'mb-1 block text-xs font-medium text-[var(--ink-2)]';
 const sectionHeadingClass = 'text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--ink-3)]';
+const hintClass = 'text-xs leading-relaxed text-[var(--ink-3)]';
 const primaryButtonClass =
   'flex h-10 items-center justify-center gap-1.5 rounded-full px-5 text-[13px] font-medium transition-[opacity,transform] duration-150 ease-out hover:opacity-90 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-50';
+const smallPrimaryClass =
+  'flex h-8 shrink-0 items-center rounded-full px-3.5 text-xs font-medium transition-[opacity,transform] duration-150 ease-out hover:opacity-90 active:scale-[0.96] disabled:opacity-50';
 const secondaryButtonClass =
-  'flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium text-[var(--ink-1)] transition-[background-color,transform] duration-150 ease-out hover:bg-[var(--bg-subtle-hover)] active:scale-[0.96] disabled:pointer-events-none disabled:opacity-50';
+  'flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-xs font-medium text-[var(--ink-1)] transition-[background-color,transform] duration-150 ease-out hover:bg-[var(--bg-subtle-hover)] active:scale-[0.96] disabled:pointer-events-none disabled:opacity-50';
 const textLinkClass =
   'relative text-xs font-medium text-[var(--ink-2)] underline decoration-[var(--border-strong)] underline-offset-2 transition-colors before:absolute before:-inset-x-2 before:-inset-y-1.5 hover:text-[var(--ink-1)] hover:decoration-[var(--ink-1)] disabled:opacity-50';
+const quietButtonClass = 'text-xs text-[var(--ink-3)] transition-colors hover:text-[var(--ink-1)]';
+const dangerButtonClass = 'text-xs font-medium text-[var(--accent)] hover:underline';
+
+const surface = { backgroundColor: 'var(--bg-surface)' };
+const inkFill = { backgroundColor: 'var(--ink-1)', color: 'var(--bg-canvas)' };
 
 const MODES: { id: Mode; label: string }[] = [
   { id: 'sign-in', label: 'Sign in' },
+  { id: 'create', label: 'Get a passkey' },
   { id: 'join', label: 'Join a room' },
-  { id: 'start', label: 'Start a room' },
 ];
 
 const newSceneId = () => `unit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -62,7 +72,7 @@ const CopyButton: React.FC<{ value: string; label: string }> = ({ value, label }
         });
       }}
       aria-label={label}
-      style={{ backgroundColor: 'var(--bg-surface)' }}
+      style={surface}
       className={secondaryButtonClass}
     >
       {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
@@ -73,10 +83,7 @@ const CopyButton: React.FC<{ value: string; label: string }> = ({ value, label }
 
 /** A generated code, shown large enough to read back without mistakes. */
 const CodeBlock: React.FC<{ code: string; label: string }> = ({ code, label }) => (
-  <div
-    style={{ backgroundColor: 'var(--bg-surface)' }}
-    className="flex items-center justify-between gap-3 rounded-xl py-2 pl-4 pr-2"
-  >
+  <div style={surface} className="flex items-center justify-between gap-3 rounded-xl py-2 pl-4 pr-2">
     <code className="select-all font-mono text-[17px] font-medium tracking-[0.08em] text-[var(--ink-1)]">
       {code}
     </code>
@@ -84,15 +91,30 @@ const CodeBlock: React.FC<{ code: string; label: string }> = ({ code, label }) =
   </div>
 );
 
+const ScriptRow: React.FC<{
+  title: string;
+  meta: string;
+  children: React.ReactNode;
+}> = ({ title, meta, children }) => (
+  <li className="flex items-center justify-between gap-3 py-2">
+    <div className="min-w-0">
+      <p className="truncate text-[13px] font-medium text-[var(--ink-1)]">{title.trim() || 'Untitled screenplay'}</p>
+      <p className="text-[11px] text-[var(--ink-3)] [font-variant-numeric:tabular-nums]">{meta}</p>
+    </div>
+    <div className="flex shrink-0 items-center gap-2">{children}</div>
+  </li>
+);
+
 /**
- * The writers room: sign in with a name and passkey (no email), join with an
- * invite code, or start a room; then open, start or share scripts.
+ * Accounts and writers rooms. No email: a writer's name plus a generated
+ * passkey signs them in on any device, syncs their own scripts, and gets
+ * them into shared rooms.
  */
 export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
   open,
   onClose,
-  session,
-  onSession,
+  account,
+  onAccount,
   onSignOut,
   activeDoc,
   onOpenScript,
@@ -106,6 +128,7 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
   onCloseRef.current = onClose;
 
   const [mode, setMode] = useState<Mode>('sign-in');
+  const [view, setView] = useState<View>({ kind: 'account' });
   const [name, setName] = useState('');
   const [passkey, setPasskey] = useState('');
   const [inviteCode, setInviteCode] = useState('');
@@ -114,14 +137,17 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
   const [error, setError] = useState<string | null>(null);
   /** A passkey just created for this writer: shown once */
   const [newPasskey, setNewPasskey] = useState<string | null>(null);
-  /** A passkey the owner just reissued for someone else */
-  const [issued, setIssued] = useState<{ writerName: string; passkey: string } | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [details, setDetails] = useState<RoomDetails | null>(null);
 
-  const loadDetails = useCallback(async () => {
+  const personalRoom = account?.rooms.find((r) => r.personal);
+  const sharedRooms = account?.rooms.filter((r) => !r.personal) ?? [];
+  const shownRoomId = view.kind === 'room' ? view.roomId : personalRoom?.id;
+
+  const loadDetails = useCallback(async (roomId: string | undefined) => {
+    if (!roomId) return;
     try {
-      setDetails(await roomApi.details());
+      setDetails(await roomApi.details(roomId));
     } catch (err) {
       setError((err as Error).message);
     }
@@ -130,10 +156,15 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
   useEffect(() => {
     if (!open) return;
     setError(null);
-    setIssued(null);
     setConfirming(null);
-    if (session) void loadDetails();
-  }, [open, session, loadDetails]);
+    setDetails(null);
+    if (account) void loadDetails(shownRoomId);
+  }, [open, account, shownRoomId, loadDetails]);
+
+  // Back to the account view whenever the dialog opens
+  useEffect(() => {
+    if (open) setView({ kind: 'account' });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -184,19 +215,24 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
     }
   };
 
+  const acceptSession = (session: SessionResponse) => {
+    if (session.passkey) setNewPasskey(session.passkey);
+    setPasskey('');
+    setInviteCode('');
+    setRoomName('');
+    onAccount(session);
+  };
+
   const submitSignedOut = (e: React.FormEvent) => {
     e.preventDefault();
     void run('auth', async () => {
-      const result =
+      acceptSession(
         mode === 'sign-in'
           ? await roomApi.signIn(name, passkey)
-          : mode === 'join'
-          ? await roomApi.join(inviteCode, name)
-          : await roomApi.createRoom(roomName, name);
-      if (result.passkey) setNewPasskey(result.passkey);
-      setPasskey('');
-      setInviteCode('');
-      onSession(result);
+          : mode === 'create'
+          ? await roomApi.createAccount(name)
+          : await roomApi.join(inviteCode, name)
+      );
     });
   };
 
@@ -205,44 +241,38 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
       onOpenScript(await roomApi.getScript(id));
     });
 
-  const newScript = () =>
-    run('new-script', async () => {
-      const slug = 'INT. LOCATION - DAY';
-      onOpenScript(
-        await roomApi.createScript('Untitled screenplay', {}, [
-          {
-            id: newSceneId(),
-            title: 'Scene 1',
-            slugline: slug,
-            synopsis: null,
-            contentHtml: `<p data-sp-type="slugline">${slug}</p><p data-sp-type="action"><br></p>`,
-          },
-        ])
-      );
-    });
-
-  const shareActive = () =>
-    run('share', async () => {
-      onOpenScript(
-        await roomApi.createScript(
-          activeDoc.title,
-          documentMeta(activeDoc),
-          (activeDoc.units ?? []).map(unitToScene)
-        )
-      );
+  const deleteScript = (id: string) =>
+    run(`delete-${id}`, async () => {
+      await roomApi.deleteScript(id);
+      setConfirming(null);
+      onScriptDeleted(id);
+      await loadDetails(shownRoomId);
     });
 
   const signOut = () =>
     run('sign-out', async () => {
-      await roomApi.signOut().catch(() => {});
+      await onSignOut();
       setDetails(null);
       setNewPasskey(null);
-      onSignOut();
+      setMode('sign-in');
     });
 
-  const me = details?.me ?? session?.me;
-  const isOwner = me?.role === 'owner';
-  const openSeats = details ? details.room.maxWriters - details.writers.length : 0;
+  const isActiveInRoom = (roomId: string) => activeDoc.room?.roomId === roomId;
+  const scriptMeta = (count: number, updatedAt: string) =>
+    `${count} ${count === 1 ? 'scene' : 'scenes'} · updated ${timeAgo(updatedAt)}`;
+
+  const room = view.kind === 'room' ? sharedRooms.find((r) => r.id === view.roomId) : undefined;
+  const roomDetails = view.kind === 'room' && details?.room.id === view.roomId ? details : null;
+  const personalDetails = view.kind === 'account' && details?.room.personal ? details : null;
+  const isOwner = roomDetails?.me.role === 'owner';
+  const openSeats = roomDetails ? roomDetails.room.maxWriters - roomDetails.writers.length : 0;
+
+  const title = !account ? 'Your passkey' : room ? room.name : account.me.name;
+  const subtitle = !account
+    ? 'Keep your scripts on every device, and write with others. No email: your name and a passkey sign you in.'
+    : room
+    ? 'Scripts here sync with everyone in the room.'
+    : 'Your scripts are saved to your account and open on any device where you sign in with your passkey.';
 
   return (
     <div
@@ -261,32 +291,37 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
       >
         <div className="flex items-start justify-between gap-3 px-5 pb-3 pt-5 sm:px-6">
           <div className="min-w-0">
-            <h2 id="writers-room-title" className="text-lg font-semibold tracking-[-0.01em] text-[var(--ink-1)]">
-              {session ? session.room.name : 'Writers room'}
+            {room && !newPasskey && (
+              <button
+                type="button"
+                onClick={() => setView({ kind: 'account' })}
+                className="mb-1.5 flex items-center gap-1 text-xs font-medium text-[var(--ink-3)] transition-colors hover:text-[var(--ink-1)]"
+              >
+                <ArrowLeft className="size-3.5" />
+                Your account
+              </button>
+            )}
+            <h2 id="writers-room-title" className="truncate text-lg font-semibold tracking-[-0.01em] text-[var(--ink-1)]">
+              {title}
             </h2>
-            <p className="mt-0.5 text-xs leading-relaxed text-[var(--ink-3)]">
-              {session ? (
-                <>Signed in as {session.me.name}. Scripts here sync with everyone in the room.</>
-              ) : (
-                <>Write a script with up to two others. No email: you sign in with your name and a passkey.</>
-              )}
-            </p>
+            <p className="mt-0.5 text-xs leading-relaxed text-[var(--ink-3)]">{subtitle}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close writers room"
+            aria-label="Close"
             className="relative -mr-1 flex size-9 shrink-0 items-center justify-center rounded-full text-[var(--ink-3)] transition-[color,background-color] duration-150 ease-out before:absolute before:-inset-0.5 hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)]"
           >
             <X className="size-4" />
           </button>
         </div>
 
-        {!session && (
+        {/* Signed out: sign in, get a passkey, or join a room */}
+        {!account && (
           <form onSubmit={submitSignedOut} className="px-5 pb-5 sm:px-6">
             <div
               role="tablist"
-              aria-label="How to enter"
+              aria-label="How to sign in"
               style={{ background: 'var(--capsule-track-bg)', boxShadow: 'var(--capsule-track-shadow)' }}
               className="mb-4 grid grid-cols-3 gap-1 rounded-full p-1"
             >
@@ -329,25 +364,8 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
                     autoComplete="off"
                     autoCapitalize="characters"
                     spellCheck={false}
-                    style={{ backgroundColor: 'var(--bg-surface)' }}
-                    className={`${fieldClass} font-mono tracking-[0.06em]`}
-                  />
-                </div>
-              )}
-              {mode === 'start' && (
-                <div>
-                  <label htmlFor="room-name" className={labelClass}>
-                    Room name <span className="font-normal text-[var(--ink-3)]">optional</span>
-                  </label>
-                  <input
-                    ref={firstFieldRef}
-                    id="room-name"
-                    value={roomName}
-                    onChange={(e) => setRoomName(e.target.value)}
-                    placeholder="Night Frequency writers"
-                    maxLength={60}
-                    style={{ backgroundColor: 'var(--bg-surface)' }}
-                    className={fieldClass}
+                    style={surface}
+                    className={codeFieldClass}
                   />
                 </div>
               )}
@@ -356,14 +374,14 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
                   {mode === 'sign-in' ? 'Name' : 'Your name'}
                 </label>
                 <input
-                  ref={mode === 'sign-in' ? firstFieldRef : undefined}
+                  ref={mode === 'join' ? undefined : firstFieldRef}
                   id="room-writer-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="As the room knows you"
+                  placeholder={mode === 'sign-in' ? 'As you signed up' : 'How other writers will see you'}
                   autoComplete="username"
                   maxLength={40}
-                  style={{ backgroundColor: 'var(--bg-surface)' }}
+                  style={surface}
                   className={fieldClass}
                 />
               </div>
@@ -381,8 +399,8 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
                     autoComplete="current-password"
                     autoCapitalize="characters"
                     spellCheck={false}
-                    style={{ backgroundColor: 'var(--bg-surface)' }}
-                    className={`${fieldClass} font-mono tracking-[0.06em]`}
+                    style={surface}
+                    className={codeFieldClass}
                   />
                 </div>
               )}
@@ -394,41 +412,39 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
               </p>
             )}
 
-            <button
-              type="submit"
-              disabled={busy !== null}
-              style={{ backgroundColor: 'var(--ink-1)', color: 'var(--bg-canvas)' }}
-              className={`${primaryButtonClass} mt-4 w-full`}
-            >
+            <button type="submit" disabled={busy !== null} style={inkFill} className={`${primaryButtonClass} mt-4 w-full`}>
               {busy
                 ? 'One moment…'
                 : mode === 'sign-in'
-                ? 'Enter the writers room'
-                : mode === 'join'
-                ? 'Join and get my passkey'
-                : 'Start the room'}
+                ? 'Sign in'
+                : mode === 'create'
+                ? 'Get my passkey'
+                : 'Join and get my passkey'}
             </button>
-            <p className="mt-3 text-center text-[11px] leading-relaxed text-[var(--ink-3)]">
+            <p className={`mt-3 text-center ${hintClass}`}>
               {mode === 'sign-in'
-                ? 'Lost your passkey? Ask the person who started your room for a new one.'
-                : 'You’ll get a passkey. With your name, it’s how you sign in on any device.'}
+                ? 'Signing in brings your scripts and writers rooms onto this device.'
+                : mode === 'create'
+                ? 'The scripts on this device are saved to your account, so you can open them anywhere.'
+                : 'Already have a passkey? Sign in first, then join from your account.'}
             </p>
           </form>
         )}
 
-        {session && newPasskey && (
+        {/* A new passkey, shown once */}
+        {account && newPasskey && (
           <div className="px-5 pb-5 sm:px-6">
             <h3 className={`mb-2 ${sectionHeadingClass}`}>Your passkey</h3>
             <CodeBlock code={newPasskey} label="Copy your passkey" />
             <p className="mt-2.5 text-xs leading-relaxed text-[var(--ink-2)]">
-              Save it in your password manager or somewhere safe. With your name,{' '}
-              <span className="font-medium text-[var(--ink-1)]">{session.me.name}</span>, it’s how you
-              get back in on any device. Focus can’t show it again.
+              Save it in your password manager or somewhere safe. On another device, sign in as{' '}
+              <span className="font-medium text-[var(--ink-1)]">{account.me.name}</span> with this passkey
+              and your scripts come with you. Focus can’t show it again.
             </p>
             <button
               type="button"
               onClick={() => setNewPasskey(null)}
-              style={{ backgroundColor: 'var(--ink-1)', color: 'var(--bg-canvas)' }}
+              style={inkFill}
               className={`${primaryButtonClass} mt-4 w-full`}
             >
               I’ve saved my passkey
@@ -436,7 +452,7 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
           </div>
         )}
 
-        {session && !newPasskey && (
+        {account && !newPasskey && (
           <div className="space-y-6 px-5 pb-5 sm:px-6">
             {error && (
               <p role="alert" className="text-xs leading-relaxed text-[var(--accent)]">
@@ -444,223 +460,348 @@ export const WritersRoomDialog: React.FC<WritersRoomDialogProps> = ({
               </p>
             )}
 
-            <section>
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <h3 className={sectionHeadingClass}>Scripts</h3>
-                <button
-                  type="button"
-                  onClick={newScript}
-                  disabled={busy !== null}
-                  style={{ backgroundColor: 'var(--bg-surface)' }}
-                  className={secondaryButtonClass}
-                >
-                  <Plus className="size-3.5" />
-                  New script
-                </button>
-              </div>
-              {!details ? (
-                <p className="py-2 text-xs text-[var(--ink-3)]">Loading the room…</p>
-              ) : details.scripts.length === 0 ? (
-                <p className="py-2 text-xs leading-relaxed text-[var(--ink-3)]">
-                  No scripts yet. Start one, or share the script you have open.
-                </p>
-              ) : (
-                <ul className="divide-y divide-[var(--border-subtle)]">
-                  {details.scripts.map((script) => (
-                    <li key={script.id} className="flex items-center justify-between gap-3 py-2">
-                      <div className="min-w-0">
-                        <p className="truncate text-[13px] font-medium text-[var(--ink-1)]">
-                          {script.title.trim() || 'Untitled screenplay'}
-                        </p>
-                        <p className="text-[11px] text-[var(--ink-3)] [font-variant-numeric:tabular-nums]">
-                          {script.sceneCount} {script.sceneCount === 1 ? 'scene' : 'scenes'} · updated{' '}
-                          {timeAgo(script.updatedAt)}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        {isOwner &&
-                          (confirming === script.id ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                run(`delete-${script.id}`, async () => {
-                                  await roomApi.deleteScript(script.id);
-                                  setConfirming(null);
-                                  onScriptDeleted(script.id);
-                                  await loadDetails();
-                                })
-                              }
-                              className="text-xs font-medium text-[var(--accent)] hover:underline"
-                            >
-                              Delete for everyone
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setConfirming(script.id)}
-                              className="text-xs text-[var(--ink-3)] transition-colors hover:text-[var(--ink-1)]"
-                            >
-                              Delete
-                            </button>
-                          ))}
-                        <button
-                          type="button"
-                          onClick={() => openScript(script.id)}
-                          disabled={busy !== null}
-                          style={{ backgroundColor: 'var(--ink-1)', color: 'var(--bg-canvas)' }}
-                          className="flex h-8 items-center rounded-full px-3.5 text-xs font-medium transition-[opacity,transform] duration-150 ease-out hover:opacity-90 active:scale-[0.96] disabled:opacity-50"
-                        >
-                          {busy === `open-${script.id}` ? 'Opening…' : 'Open'}
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {!activeDoc.room && (
-                <button
-                  type="button"
-                  onClick={shareActive}
-                  disabled={busy !== null}
-                  className="mt-2 flex items-center gap-1.5 text-xs font-medium text-[var(--ink-2)] transition-colors hover:text-[var(--ink-1)] disabled:opacity-50"
-                >
-                  <Share2 className="size-3.5" />
-                  {busy === 'share'
-                    ? 'Sharing…'
-                    : `Share a copy of “${activeDoc.title.trim() || 'Untitled'}” with the room`}
-                </button>
-              )}
-            </section>
-
-            {details && (
-              <section>
-                <div className="mb-1 flex items-baseline justify-between gap-2">
-                  <h3 className={sectionHeadingClass}>Writers</h3>
-                  <span className="text-[11px] text-[var(--ink-3)] [font-variant-numeric:tabular-nums]">
-                    {details.writers.length} of {details.room.maxWriters}
-                  </span>
-                </div>
-                <ul className="divide-y divide-[var(--border-subtle)]">
-                  {details.writers.map((writer) => (
-                    <li key={writer.id} className="flex items-center justify-between gap-3 py-2">
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <WriterAvatar writer={writer} />
-                        <div className="min-w-0">
-                          <p className="truncate text-[13px] font-medium text-[var(--ink-1)]">
-                            {writer.name}
-                            {writer.id === me?.id && (
-                              <span className="font-normal text-[var(--ink-3)]"> (you)</span>
-                            )}
-                          </p>
-                          {writer.role === 'owner' && (
-                            <p className="text-[11px] text-[var(--ink-3)]">Started the room</p>
-                          )}
-                        </div>
-                      </div>
-                      {isOwner && (
-                        <div className="flex shrink-0 items-center gap-3">
+            {view.kind === 'account' && (
+              <>
+                <section>
+                  <h3 className={`mb-1 ${sectionHeadingClass}`}>Your scripts</h3>
+                  {!personalDetails ? (
+                    <p className={`py-2 ${hintClass}`}>Loading…</p>
+                  ) : personalDetails.scripts.length === 0 ? (
+                    <p className={`py-2 ${hintClass}`}>
+                      Nothing saved yet. Scripts you write while signed in are saved here automatically.
+                    </p>
+                  ) : (
+                    <ul className="divide-y divide-[var(--border-subtle)]">
+                      {personalDetails.scripts.map((script) => (
+                        <ScriptRow key={script.id} title={script.title} meta={scriptMeta(script.sceneCount, script.updatedAt)}>
                           <button
                             type="button"
-                            onClick={() =>
-                              run(`passkey-${writer.id}`, async () => {
-                                const result = await roomApi.reissuePasskey(writer.id);
-                                setIssued({ writerName: writer.name, passkey: result.passkey });
-                              })
-                            }
+                            onClick={() => openScript(script.id)}
                             disabled={busy !== null}
-                            className={textLinkClass}
+                            style={inkFill}
+                            className={smallPrimaryClass}
                           >
-                            New passkey
+                            {busy === `open-${script.id}` ? 'Opening…' : 'Open'}
                           </button>
-                          {writer.id !== me?.id &&
+                        </ScriptRow>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+
+                <section>
+                  <h3 className={`mb-1 ${sectionHeadingClass}`}>Writers rooms</h3>
+                  {sharedRooms.length > 0 ? (
+                    <ul className="mb-3 divide-y divide-[var(--border-subtle)]">
+                      {sharedRooms.map((r) => (
+                        <li key={r.id}>
+                          <button
+                            type="button"
+                            onClick={() => setView({ kind: 'room', roomId: r.id })}
+                            className="group flex w-full items-center justify-between gap-3 py-2.5 text-left"
+                          >
+                            <span className="flex min-w-0 items-center gap-2.5">
+                              <WriterAvatar writer={{ name: r.name, color: r.color }} size="sm" />
+                              <span className="truncate text-[13px] font-medium text-[var(--ink-1)]">{r.name}</span>
+                              {r.role === 'owner' && <span className="text-[11px] text-[var(--ink-3)]">You started it</span>}
+                            </span>
+                            <ChevronRight className="size-4 shrink-0 text-[var(--ink-3)] transition-transform group-hover:translate-x-0.5" />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className={`mb-3 ${hintClass}`}>
+                      Write a script with up to two others. Start a room and share its invite code, or join with
+                      one.
+                    </p>
+                  )}
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void run('create-room', async () => acceptSession(await roomApi.createRoom(roomName)));
+                      }}
+                      className="flex gap-1.5"
+                    >
+                      <label htmlFor="new-room-name" className="sr-only">
+                        New room name
+                      </label>
+                      <input
+                        id="new-room-name"
+                        value={roomName}
+                        onChange={(e) => setRoomName(e.target.value)}
+                        placeholder="New room name"
+                        maxLength={60}
+                        style={surface}
+                        className={`${fieldClass} h-8 min-w-0`}
+                      />
+                      <button type="submit" disabled={busy !== null} style={surface} className={secondaryButtonClass}>
+                        <Plus className="size-3.5" />
+                        Start
+                      </button>
+                    </form>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void run('join-room', async () => acceptSession(await roomApi.join(inviteCode)));
+                      }}
+                      className="flex gap-1.5"
+                    >
+                      <label htmlFor="join-room-code" className="sr-only">
+                        Invite code
+                      </label>
+                      <input
+                        id="join-room-code"
+                        value={inviteCode}
+                        onChange={(e) => setInviteCode(e.target.value)}
+                        placeholder="Invite code"
+                        autoComplete="off"
+                        autoCapitalize="characters"
+                        spellCheck={false}
+                        style={surface}
+                        className={`${codeFieldClass} h-8 min-w-0`}
+                      />
+                      <button type="submit" disabled={busy !== null || !inviteCode.trim()} style={surface} className={secondaryButtonClass}>
+                        Join
+                      </button>
+                    </form>
+                  </div>
+                </section>
+
+                <section className="space-y-2 border-t border-[var(--border-subtle)] pt-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className={hintClass}>Lost your passkey, or shared it by mistake?</p>
+                    {confirming === 'new-passkey' ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          run('new-passkey', async () => {
+                            setConfirming(null);
+                            acceptSession(await roomApi.newPasskey());
+                          })
+                        }
+                        className={dangerButtonClass}
+                      >
+                        Replace it and sign out other devices
+                      </button>
+                    ) : (
+                      <button type="button" onClick={() => setConfirming('new-passkey')} className={textLinkClass}>
+                        New passkey
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className={hintClass}>Signing out removes your synced scripts from this device. They stay in your account.</p>
+                    <button
+                      type="button"
+                      onClick={signOut}
+                      disabled={busy !== null}
+                      className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-[var(--ink-2)] transition-colors hover:text-[var(--ink-1)]"
+                    >
+                      <LogOut className="size-3.5" />
+                      {busy === 'sign-out' ? 'Signing out…' : 'Sign out'}
+                    </button>
+                  </div>
+                </section>
+              </>
+            )}
+
+            {view.kind === 'room' && (
+              <>
+                <section>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <h3 className={sectionHeadingClass}>Scripts</h3>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        run('new-script', async () => {
+                          const slug = 'INT. LOCATION - DAY';
+                          onOpenScript(
+                            await roomApi.createScript(view.roomId, 'Untitled screenplay', {}, [
+                              {
+                                id: newSceneId(),
+                                title: 'Scene 1',
+                                slugline: slug,
+                                synopsis: null,
+                                contentHtml: `<p data-sp-type="slugline">${slug}</p><p data-sp-type="action"><br></p>`,
+                              },
+                            ])
+                          );
+                        })
+                      }
+                      disabled={busy !== null}
+                      style={surface}
+                      className={secondaryButtonClass}
+                    >
+                      <Plus className="size-3.5" />
+                      New script
+                    </button>
+                  </div>
+                  {!roomDetails ? (
+                    <p className={`py-2 ${hintClass}`}>Loading the room…</p>
+                  ) : roomDetails.scripts.length === 0 ? (
+                    <p className={`py-2 ${hintClass}`}>No scripts yet. Start one, or share a copy of the script you have open.</p>
+                  ) : (
+                    <ul className="divide-y divide-[var(--border-subtle)]">
+                      {roomDetails.scripts.map((script) => (
+                        <ScriptRow key={script.id} title={script.title} meta={scriptMeta(script.sceneCount, script.updatedAt)}>
+                          {isOwner &&
+                            (confirming === script.id ? (
+                              <button type="button" onClick={() => deleteScript(script.id)} className={dangerButtonClass}>
+                                Delete for everyone
+                              </button>
+                            ) : (
+                              <button type="button" onClick={() => setConfirming(script.id)} className={quietButtonClass}>
+                                Delete
+                              </button>
+                            ))}
+                          <button
+                            type="button"
+                            onClick={() => openScript(script.id)}
+                            disabled={busy !== null}
+                            style={inkFill}
+                            className={smallPrimaryClass}
+                          >
+                            {busy === `open-${script.id}` ? 'Opening…' : 'Open'}
+                          </button>
+                        </ScriptRow>
+                      ))}
+                    </ul>
+                  )}
+                  {!isActiveInRoom(view.roomId) && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        run('share', async () => {
+                          onOpenScript(
+                            await roomApi.createScript(
+                              view.roomId,
+                              activeDoc.title,
+                              documentMeta(activeDoc),
+                              (activeDoc.units ?? []).map(unitToScene)
+                            )
+                          );
+                        })
+                      }
+                      disabled={busy !== null}
+                      className="mt-2 flex items-center gap-1.5 text-xs font-medium text-[var(--ink-2)] transition-colors hover:text-[var(--ink-1)] disabled:opacity-50"
+                    >
+                      <Share2 className="size-3.5" />
+                      {busy === 'share' ? 'Sharing…' : `Share a copy of “${activeDoc.title.trim() || 'Untitled'}” with the room`}
+                    </button>
+                  )}
+                </section>
+
+                {roomDetails && (
+                  <section>
+                    <div className="mb-1 flex items-baseline justify-between gap-2">
+                      <h3 className={sectionHeadingClass}>Writers</h3>
+                      <span className="text-[11px] text-[var(--ink-3)] [font-variant-numeric:tabular-nums]">
+                        {roomDetails.writers.length} of {roomDetails.room.maxWriters}
+                      </span>
+                    </div>
+                    <ul className="divide-y divide-[var(--border-subtle)]">
+                      {roomDetails.writers.map((writer) => (
+                        <li key={writer.id} className="flex items-center justify-between gap-3 py-2">
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            <WriterAvatar writer={writer} />
+                            <div className="min-w-0">
+                              <p className="truncate text-[13px] font-medium text-[var(--ink-1)]">
+                                {writer.name}
+                                {writer.id === account.me.id && <span className="font-normal text-[var(--ink-3)]"> (you)</span>}
+                              </p>
+                              {writer.role === 'owner' && <p className="text-[11px] text-[var(--ink-3)]">Started the room</p>}
+                            </div>
+                          </div>
+                          {isOwner &&
+                            writer.id !== account.me.id &&
                             (confirming === writer.id ? (
                               <button
                                 type="button"
                                 onClick={() =>
                                   run(`remove-${writer.id}`, async () => {
-                                    await roomApi.removeWriter(writer.id);
+                                    await roomApi.removeWriter(view.roomId, writer.id);
                                     setConfirming(null);
-                                    await loadDetails();
+                                    await loadDetails(view.roomId);
                                   })
                                 }
-                                className="text-xs font-medium text-[var(--accent)] hover:underline"
+                                className={dangerButtonClass}
                               >
                                 Remove {writer.name}
                               </button>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => setConfirming(writer.id)}
-                                className="text-xs text-[var(--ink-3)] transition-colors hover:text-[var(--ink-1)]"
-                              >
+                              <button type="button" onClick={() => setConfirming(writer.id)} className={quietButtonClass}>
                                 Remove
                               </button>
                             ))}
-                        </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+
+                {roomDetails?.room.inviteCode && (
+                  <section>
+                    <div className="mb-2 flex items-baseline justify-between gap-2">
+                      <h3 className={sectionHeadingClass}>Invite code</h3>
+                      {isOwner && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            run('invite', async () => {
+                              const result = await roomApi.newInvite(view.roomId);
+                              setDetails({ ...roomDetails, room: { ...roomDetails.room, inviteCode: result.inviteCode } });
+                            })
+                          }
+                          disabled={busy !== null}
+                          className={textLinkClass}
+                        >
+                          New code
+                        </button>
                       )}
-                    </li>
-                  ))}
-                </ul>
-                {issued && (
-                  <div className="mt-2">
-                    <p className="mb-1.5 text-xs leading-relaxed text-[var(--ink-2)]">
-                      New passkey for <span className="font-medium text-[var(--ink-1)]">{issued.writerName}</span>.
-                      Their old one has stopped working, so share this with them privately.
-                    </p>
-                    <CodeBlock code={issued.passkey} label={`Copy ${issued.writerName}’s new passkey`} />
+                    </div>
+                    {openSeats > 0 ? (
+                      <>
+                        <CodeBlock code={roomDetails.room.inviteCode} label="Copy invite code" />
+                        <p className={`mt-2 ${hintClass}`}>
+                          Share it with {openSeats === 1 ? 'one more writer' : `up to ${openSeats} writers`}. They choose{' '}
+                          <span className="text-[var(--ink-2)]">Join a room</span>, or enter it in their account if they
+                          already have a passkey.
+                        </p>
+                      </>
+                    ) : (
+                      <p className={hintClass}>The room is full.{isOwner ? ' Remove a writer to invite someone else.' : ''}</p>
+                    )}
+                  </section>
+                )}
+
+                {roomDetails && !isOwner && (
+                  <div className="flex justify-end border-t border-[var(--border-subtle)] pt-3">
+                    {confirming === 'leave' ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          run('leave', async () => {
+                            await roomApi.leaveRoom(view.roomId);
+                            const session = await roomApi.session();
+                            if (session) onAccount(session);
+                            setView({ kind: 'account' });
+                          })
+                        }
+                        className={dangerButtonClass}
+                      >
+                        Leave {roomDetails.room.name}
+                      </button>
+                    ) : (
+                      <button type="button" onClick={() => setConfirming('leave')} className={quietButtonClass}>
+                        Leave this room
+                      </button>
+                    )}
                   </div>
                 )}
-              </section>
+              </>
             )}
-
-            {details && (
-              <section>
-                <div className="mb-2 flex items-baseline justify-between gap-2">
-                  <h3 className={sectionHeadingClass}>Invite code</h3>
-                  {isOwner && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        run('invite', async () => {
-                          const result = await roomApi.newInvite();
-                          setDetails({ ...details, room: { ...details.room, inviteCode: result.inviteCode } });
-                        })
-                      }
-                      disabled={busy !== null}
-                      className={textLinkClass}
-                    >
-                      New code
-                    </button>
-                  )}
-                </div>
-                {openSeats > 0 ? (
-                  <>
-                    <CodeBlock code={details.room.inviteCode} label="Copy invite code" />
-                    <p className="mt-2 text-xs leading-relaxed text-[var(--ink-3)]">
-                      Share it with {openSeats === 1 ? 'one more writer' : `up to ${openSeats} writers`}.
-                      They choose <span className="text-[var(--ink-2)]">Join a room</span> and get their own
-                      passkey.
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-xs leading-relaxed text-[var(--ink-3)]">
-                    The room is full. {isOwner ? 'Remove a writer to invite someone else.' : ''}
-                  </p>
-                )}
-              </section>
-            )}
-
-            <div className="flex justify-end border-t border-[var(--border-subtle)] pt-3">
-              <button
-                type="button"
-                onClick={signOut}
-                disabled={busy !== null}
-                className="flex items-center gap-1.5 text-xs font-medium text-[var(--ink-3)] transition-colors hover:text-[var(--ink-1)]"
-              >
-                <LogOut className="size-3.5" />
-                Sign out of the room
-              </button>
-            </div>
           </div>
         )}
       </div>

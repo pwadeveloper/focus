@@ -20,7 +20,7 @@ import {
   Archive,
   GitCommitHorizontal,
   CircleHelp,
-  Users,
+  KeyRound,
 } from 'lucide-react';
 import {
   FocusMode,
@@ -37,14 +37,19 @@ import { WORK_KIND_TONE, toneChip } from '../palette';
 import { guideShortcut } from '../screenplay';
 import { FocusMark } from './FocusLogo';
 import { WriterAvatar } from './WriterAvatar';
-import type { RoomWriter } from '../../api/_lib/types';
+import type { RoomWriter, WriterColor } from '../../api/_lib/types';
 
 interface TopBarProps {
   /** Return to the welcome home page. */
   onOpenHome: () => void;
+  /** Opens the account and writers room panel */
   onOpenWritersRoom: () => void;
-  /** Other writers in this writers room script, and where they are */
+  /** The signed-in writer, or null */
+  account: { name: string; color: WriterColor } | null;
+  /** Other writers in this synced script, and where they are */
   collaborators?: { writer: RoomWriter; where: string }[];
+  /** Replaces Saved/Saving for synced scripts, e.g. "Synced" or "Offline" */
+  statusLabel?: string;
   isTyping: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
@@ -73,7 +78,9 @@ interface TopBarProps {
 export const TopBar: React.FC<TopBarProps> = ({
   onOpenHome,
   onOpenWritersRoom,
+  account,
   collaborators,
+  statusLabel,
   isTyping,
   sidebarOpen,
   onToggleSidebar,
@@ -255,12 +262,21 @@ export const TopBar: React.FC<TopBarProps> = ({
           type="button"
           onClick={onOpenWritersRoom}
           {...btnHover}
-          aria-label="Writers room"
-          title="Writers room"
-          className="relative flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-[var(--ink-2)] transition-colors duration-150 ease-out before:absolute before:-inset-1 hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)]"
+          aria-label={account ? `Your account and writers rooms (${account.name})` : 'Sign in with your passkey'}
+          title={account ? 'Your account and writers rooms' : 'Sign in with your passkey'}
+          className="relative flex h-7 max-w-[160px] items-center gap-1.5 rounded-full pl-1 pr-2.5 text-xs font-medium text-[var(--ink-2)] transition-colors duration-150 ease-out before:absolute before:-inset-1 hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)]"
         >
-          <Users className="size-3.5" strokeWidth={1.8} />
-          <span className="hidden md:inline">Room</span>
+          {account ? (
+            <>
+              <WriterAvatar writer={account} size="sm" className="!size-5 !text-[9px]" />
+              <span className="hidden truncate md:inline">{account.name}</span>
+            </>
+          ) : (
+            <>
+              <KeyRound className="ml-1.5 size-3.5" strokeWidth={1.8} />
+              <span className="hidden md:inline">Sign in</span>
+            </>
+          )}
         </button>
 
         <div
@@ -300,7 +316,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             aria-live="polite"
             className="hidden shrink-0 whitespace-nowrap text-xs text-[var(--ink-3)] lg:inline-block"
           >
-            · {saveStatus === 'saving' ? 'Saving…' : 'Saved'}
+            · {statusLabel ?? (saveStatus === 'saving' ? 'Saving…' : 'Saved')}
           </span>
 
           {collaborators && collaborators.length > 0 && (

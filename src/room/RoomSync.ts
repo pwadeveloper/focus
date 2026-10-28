@@ -1,6 +1,14 @@
 import type { DocumentItem, DocumentUnit } from '../types';
-import type { RoomWriter, SceneData, SceneRow, ScriptMeta, SyncChanges, SyncResponse } from '../../api/_lib/types';
-import { RoomApiError, roomApi } from './api';
+import type {
+  RoomScript,
+  RoomWriter,
+  SceneData,
+  SceneRow,
+  ScriptMeta,
+  SyncChanges,
+  SyncResponse,
+} from '../../api/_lib/types';
+import { CLIENT_ID, RoomApiError, roomApi } from './api';
 import { applyMeta, documentMeta, sameScene, sceneToUnit, unitToScene } from './convert';
 
 const VISIBLE_INTERVAL_MS = 2000;
@@ -12,12 +20,12 @@ const IDLE_RELEASE_MS = 10 * 60 * 1000;
 export interface RoomSyncState {
   /** signed-out: the session ended (passkey reissued, removed). gone: the script was deleted. */
   status: 'connecting' | 'live' | 'offline' | 'signed-out' | 'gone';
-  /** The scene this writer holds and can type in */
+  /** The scene this tab holds and can type in */
   heldSceneId: string | null;
-  /** Scene id to the writer holding it */
-  locks: Record<string, string>;
-  /** Other writers in this script, and the scene they're looking at */
-  presence: { writerId: string; sceneId: string | null }[];
+  /** Scene id to the writer (and tab) holding it */
+  locks: Record<string, { writerId: string; clientId: string }>;
+  /** Other tabs in this script (other writers, or this writer elsewhere) and their scene */
+  presence: { writerId: string; clientId: string; sceneId: string | null }[];
   writers: RoomWriter[];
   /** This writer stepped away long enough that their scene was freed */
   idle: boolean;
@@ -30,6 +38,15 @@ const metaKey = (title: string, meta: ScriptMeta) => JSON.stringify([title, meta
 const docMetaKey = (doc: DocumentItem) => metaKey(doc.title, documentMeta(doc));
 const sceneData = ({ version: _version, ...scene }: SceneRow): SceneData => scene;
 const newUnitId = () => `unit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+/**
+ * Server copies fetched with their versions (opened, downloaded or just
+ * uploaded). The next RoomSync for that script starts from it, so the
+ * first sync only fetches newer changes, and local text that differs is
+ * sent as an edit. Used once, so an old copy never masks later edits.
+ */
+const baselines = new Map<string, RoomScript>();
+export const primeBaseline = (script: RoomScript) => baselines.set(script.id, script);
 
 interface MergeContext {
   rows: SceneRow[];
@@ -109,6 +126,7 @@ export class RoomSync {
   private inFlight = false;
   private rerun = false;
   private stopped = false;
+  private released = false;
   private lastEditAt = Date.now();
   private state: RoomSyncState = {
     status: 'connecting',
@@ -126,13 +144,24 @@ export class RoomSync {
     private onState: (state: RoomSyncState) => void,
     private onRemote: (update: DocUpdate) => void
   ) {
-    // Treat what's on this device as the starting point but with unknown
-    // versions: the first sync returns the server's copy of every scene,
-    // so the room's latest work wins over an older local copy
     this.doc = doc;
-    for (const unit of doc.units ?? []) this.synced.set(unit.id, unitToScene(unit));
-    this.syncedOrder = (doc.units ?? []).map((unit) => unit.id);
-    this.syncedMeta = docMetaKey(doc);
+    const baseline = baselines.get(scriptId);
+    baselines.delete(scriptId);
+    if (baseline) {
+      for (const scene of baseline.scenes) {
+        this.synced.set(scene.id, sceneData(scene));
+        this.known.set(scene.id, scene.version);
+      }
+      this.syncedOrder = baseline.scenes.map((scene) => scene.id);
+      this.syncedMeta = metaKey(baseline.title, baseline.meta);
+      this.knownScriptVersion = baseline.version;
+    } else {
+      // A copy saved on this device, versions unknown: the first sync returns
+      // every scene, and the account's latest work wins over the older copy
+      for (const unit of doc.units ?? []) this.synced.set(unit.id, unitToScene(unit));
+      this.syncedOrder = (doc.units ?? []).map((unit) => unit.id);
+      this.syncedMeta = docMetaKey(doc);
+    }
   }
 
   start() {
@@ -146,7 +175,30 @@ export class RoomSync {
     this.clearTimer();
     document.removeEventListener('visibilitychange', this.handleVisibility);
     window.removeEventListener('pagehide', this.handlePageHide);
-    roomApi.leave(this.scriptId);
+    if (this.released) return;
+    // Send anything typed in the last moments, then free the scene
+    const changes = this.pendingChanges();
+    if (changes) {
+      roomApi
+        .sync(this.flushRequest(changes), true)
+        .catch(() => {})
+        .finally(() => roomApi.leave(this.scriptId));
+    } else {
+      roomApi.leave(this.scriptId);
+    }
+  }
+
+  /**
+   * Sends pending edits, then frees this tab's scene and waits for both.
+   * Signing out must wait for this: afterwards the server would refuse them.
+   */
+  async release(): Promise<void> {
+    if (this.stopped) return;
+    this.clearTimer();
+    await this.tick();
+    this.stopped = true;
+    this.released = true;
+    await roomApi.leaveNow(this.scriptId).catch(() => {});
   }
 
   setDoc(doc: DocumentItem) {
@@ -173,7 +225,63 @@ export class RoomSync {
     if (!document.hidden) this.schedule(0);
   };
 
-  private handlePageHide = () => roomApi.leave(this.scriptId);
+  private handlePageHide = () => {
+    const changes = this.pendingChanges();
+    if (changes) {
+      // keepalive lets the request finish after the tab closes
+      roomApi.sync(this.flushRequest(changes), true).catch(() => {});
+    } else {
+      roomApi.leave(this.scriptId);
+    }
+  };
+
+  /** Local edits not yet confirmed by the server, or null. */
+  private pendingChanges(): SyncChanges | null {
+    return this.diff(this.doc).changes;
+  }
+
+  private flushRequest(changes: SyncChanges) {
+    return {
+      scriptId: this.scriptId,
+      sceneId: null,
+      wantLock: false,
+      known: Object.fromEntries(this.known),
+      knownScriptVersion: this.knownScriptVersion,
+      changes,
+    };
+  }
+
+  /** Compares a document with what the server has confirmed. */
+  private diff(doc: DocumentItem) {
+    const units = doc.units ?? [];
+    const ids = units.map((unit) => unit.id);
+    const sent = new Map<string, SceneData>();
+    for (const unit of units) {
+      const scene = unitToScene(unit);
+      if (!sameScene(scene, this.synced.get(unit.id))) sent.set(unit.id, scene);
+    }
+    const deleted = [...this.synced.keys()].filter((id) => !ids.includes(id));
+    const orderChanged = !sameOrder(ids, this.syncedOrder);
+    const metaJson = docMetaKey(doc);
+    const metaChanged = metaJson !== this.syncedMeta;
+
+    const changes: SyncChanges = {};
+    if (sent.size > 0) changes.scenes = [...sent.values()];
+    if (deleted.length > 0) changes.deleted = deleted;
+    if (orderChanged) changes.order = ids;
+    if (metaChanged) {
+      changes.title = doc.title;
+      changes.meta = documentMeta(doc);
+    }
+    return {
+      changes: Object.keys(changes).length > 0 ? changes : null,
+      sent,
+      deleted,
+      ids,
+      metaJson,
+      metaChanged,
+    };
+  }
 
   private setState(patch: Partial<RoomSyncState>) {
     this.state = { ...this.state, ...patch };
@@ -208,29 +316,8 @@ export class RoomSync {
     }
     this.inFlight = true;
 
-    const doc = this.doc;
-    const units = doc.units ?? [];
-    const ids = units.map((unit) => unit.id);
-    const sent = new Map<string, SceneData>();
-    for (const unit of units) {
-      const scene = unitToScene(unit);
-      if (!sameScene(scene, this.synced.get(unit.id))) sent.set(unit.id, scene);
-    }
-    const deleted = [...this.synced.keys()].filter((id) => !ids.includes(id));
-    const orderChanged = !sameOrder(ids, this.syncedOrder);
-    const metaJson = docMetaKey(doc);
-    const metaChanged = metaJson !== this.syncedMeta;
-
-    const changes: SyncChanges = {};
-    if (sent.size > 0) changes.scenes = [...sent.values()];
-    if (deleted.length > 0) changes.deleted = deleted;
-    if (orderChanged) changes.order = ids;
-    if (metaChanged) {
-      changes.title = doc.title;
-      changes.meta = documentMeta(doc);
-    }
-    const hasChanges = Object.keys(changes).length > 0;
-    if (hasChanges) this.lastEditAt = Date.now();
+    const { changes, sent, deleted, ids, metaJson, metaChanged } = this.diff(this.doc);
+    if (changes) this.lastEditAt = Date.now();
 
     if (this.state.heldSceneId && !this.state.idle && Date.now() - this.lastEditAt > IDLE_RELEASE_MS) {
       this.setState({ idle: true });
@@ -245,7 +332,7 @@ export class RoomSync {
         wantLock: this.focus.wantLock && !this.state.idle,
         known: Object.fromEntries(this.known),
         knownScriptVersion: this.knownScriptVersion,
-        changes: hasChanges ? changes : undefined,
+        changes: changes ?? undefined,
       });
       if (this.stopped) return;
       this.absorb(res, { sent, deleted, ids, metaJson, metaChanged, heldBefore, sceneId });
@@ -257,8 +344,8 @@ export class RoomSync {
         this.stopped = true;
         return;
       }
-      // Keep the scene editable while offline; the lock lasts 30s past the last
-      // sync, and anything refused afterwards is kept as a copy (see absorb)
+      // Writing continues offline; anything refused once back online is kept
+      // as a copy (see absorb)
       this.setState({ status: 'offline' });
     } finally {
       this.inFlight = false;
@@ -305,13 +392,13 @@ export class RoomSync {
     const prevSynced = new Map(this.synced);
     const prevSyncedMeta = this.syncedMeta;
 
-    // A refused write to the scene we were holding means our hold lapsed
-    // (e.g. a long disconnect) and someone else took it. Keep our text as a copy.
+    // Refused text (written offline, or after our hold lapsed while someone
+    // else took the scene) is kept as a copy rather than lost
     const conflictCopies: DocumentUnit[] = [];
     for (const id of res.rejected) {
       const mine = sent.sent.get(id);
       const theirs = res.scenes.find((row) => row.id === id);
-      if (mine && id === sent.heldBefore && !sameScene(mine, theirs && sceneData(theirs))) {
+      if (mine && mine.contentHtml !== (theirs?.contentHtml ?? mine.contentHtml)) {
         conflictCopies.push({
           ...sceneToUnit(mine),
           id: newUnitId(),
@@ -368,8 +455,10 @@ export class RoomSync {
     this.setState({
       status: 'live',
       heldSceneId,
-      locks: Object.fromEntries(res.locks.map((lock) => [lock.sceneId, lock.writerId])),
-      presence: res.presence.filter((p) => p.writerId !== this.me.id),
+      locks: Object.fromEntries(
+        res.locks.map((lock) => [lock.sceneId, { writerId: lock.writerId, clientId: lock.clientId }])
+      ),
+      presence: res.presence.filter((p) => p.clientId !== CLIENT_ID),
       writers: res.writers,
     });
   }

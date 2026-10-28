@@ -49,17 +49,13 @@ export const sameScene = (a: SceneData, b: SceneData | undefined) =>
   a.contentHtml === b.contentHtml;
 
 /** A room script as a Focus document, keeping this writer's place if they had it open. */
-export function roomScriptToDocument(
-  script: RoomScript,
-  roomId: string,
-  existing?: DocumentItem
-): DocumentItem {
+export function roomScriptToDocument(script: RoomScript, existing?: DocumentItem): DocumentItem {
   const units = script.scenes.map((scene: SceneRow) => sceneToUnit(scene));
   const activeUnitId = units.some((u) => u.id === existing?.activeUnitId)
     ? existing?.activeUnitId
     : units[0]?.id;
   const base: DocumentItem = {
-    id: roomDocId(script.id),
+    id: existing?.id ?? roomDocId(script.id),
     kind: 'screenplay',
     title: script.title,
     contentHtml: '',
@@ -68,7 +64,7 @@ export function roomScriptToDocument(
     pinned: existing?.pinned,
     createdAt: existing?.createdAt ?? Date.now(),
     updatedAt: Date.now(),
-    room: { roomId, scriptId: script.id },
+    room: { roomId: script.roomId, scriptId: script.id },
   };
   return applyMeta(base, script.title, script.meta);
 }

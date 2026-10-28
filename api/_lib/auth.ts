@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { db } from './db.js';
 import { HttpError } from './http.js';
-import type { RoomWriter, SessionResponse, WriterColor, WriterRole } from './types.js';
+import type { Membership, RoomWriter, SessionResponse, WriterColor, WriterRole } from './types.js';
 
 const SESSION_COOKIE = 'focus_session';
 const SESSION_DAYS = 60;
@@ -35,9 +35,11 @@ const sha256 = (value: string) => createHash('sha256').update(value).digest('hex
 /** Passkeys are long random codes, so a fast hash is enough (no user-chosen secrets). */
 export const hashPasskey = (passkey: string) => sha256(normalizeCode(passkey));
 
-export interface Writer extends RoomWriter {
-  roomId: string;
-  roomName: string;
+/** The signed-in writer (a person, across all their rooms). */
+export interface Writer {
+  id: string;
+  name: string;
+  /** Empty when the session was only just created */
   sessionHash: string;
 }
 
@@ -48,11 +50,23 @@ export const toRoomWriter = (row: Record<string, unknown>): RoomWriter => ({
   color: row.color as WriterColor,
 });
 
-export const sessionPayload = (writer: Writer, passkey?: string): SessionResponse => ({
-  me: { id: writer.id, name: writer.name, role: writer.role, color: writer.color },
-  room: { id: writer.roomId, name: writer.roomName },
-  ...(passkey ? { passkey } : {}),
-});
+/** The writer and every room they belong to, personal room first. */
+export async function sessionPayload(writer: Writer, passkey?: string): Promise<SessionResponse> {
+  const rows = await db()`
+    select r.id, r.name, r.personal, m.role, m.color
+    from room_members m join rooms r on r.id = m.room_id
+    where m.writer_id = ${writer.id}
+    order by r.personal desc, m.joined_at
+  `;
+  const rooms: Membership[] = rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    personal: Boolean(row.personal),
+    role: row.role as WriterRole,
+    color: row.color as WriterColor,
+  }));
+  return { me: { id: writer.id, name: writer.name }, rooms, ...(passkey ? { passkey } : {}) };
+}
 
 function readCookie(request: Request, name: string): string | null {
   const header = request.headers.get('cookie');
@@ -88,19 +102,12 @@ export async function findWriter(request: Request): Promise<Writer | null> {
   if (!token) return null;
   const sessionHash = sha256(token);
   const [row] = await db()`
-    select w.id, w.room_id, w.name, w.role, w.color, r.name as room_name
-    from sessions s
-    join writers w on w.id = s.writer_id
-    join rooms r on r.id = w.room_id
+    select w.id, w.name
+    from sessions s join writers w on w.id = s.writer_id
     where s.token_hash = ${sessionHash} and s.expires_at > now()
   `;
   if (!row) return null;
-  return {
-    ...toRoomWriter(row),
-    roomId: String(row.room_id),
-    roomName: String(row.room_name),
-    sessionHash,
-  };
+  return { id: String(row.id), name: String(row.name), sessionHash };
 }
 
 export async function requireWriter(request: Request): Promise<Writer> {
@@ -109,8 +116,35 @@ export async function requireWriter(request: Request): Promise<Writer> {
   return writer;
 }
 
-export function requireOwner(writer: Writer): void {
-  if (writer.role !== 'owner') {
+export interface MemberOf {
+  roomId: string;
+  roomName: string;
+  personal: boolean;
+  inviteCode: string | null;
+  role: WriterRole;
+  color: WriterColor;
+}
+
+/** The writer's membership in a room, or 404 when they aren't in it. */
+export async function requireMember(writer: Writer, roomId: string): Promise<MemberOf> {
+  const [row] = await db()`
+    select r.id, r.name, r.personal, r.invite_code, m.role, m.color
+    from room_members m join rooms r on r.id = m.room_id
+    where m.room_id = ${roomId} and m.writer_id = ${writer.id}
+  `;
+  if (!row) throw new HttpError(404, 'You’re not in that writers room.');
+  return {
+    roomId: String(row.id),
+    roomName: String(row.name),
+    personal: Boolean(row.personal),
+    inviteCode: (row.invite_code as string | null) ?? null,
+    role: row.role as WriterRole,
+    color: row.color as WriterColor,
+  };
+}
+
+export function requireOwner(member: MemberOf): void {
+  if (member.role !== 'owner') {
     throw new HttpError(403, 'Only the person who started this room can do that.');
   }
 }
