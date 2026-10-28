@@ -190,12 +190,27 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
+  // Touch screens get a scrubbable rail instead of the hover panel
+  const [isTouch, setIsTouch] = useState<boolean>(() => !canHover());
+  // While a finger is on the rail: the item under it and its Y in the nav
+  const [scrub, setScrub] = useState<{ index: number; y: number } | null>(
+    null
+  );
 
   const navRef = useRef<HTMLElement>(null);
   const ticksWrapperRef = useRef<HTMLButtonElement>(null);
   const labelsWrapperRef = useRef<HTMLDivElement>(null);
   const labelRowsRef = useRef<(HTMLButtonElement | null)[]>([]);
   const tickBarsRef = useRef<(HTMLSpanElement | null)[]>([]);
+  const scrubIndexRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(hover: hover) and (pointer: fine)');
+    const sync = () => setIsTouch(!mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
 
   const scanHeadings = useCallback(() => {
     const items: OutlineHeadingItem[] = [];
@@ -272,6 +287,10 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
 
   useEffect(() => {
     scanHeadings();
+    // This effect runs before the parent editor fills in the scene's HTML,
+    // so look again once it has, or the live scene shows no items
+    const raf = requestAnimationFrame(scanHeadings);
+    return () => cancelAnimationFrame(raf);
   }, [contentHtml, docTitle, activeUnitId, units, scanHeadings]);
 
   // Dismiss expanded outline on touch outside
@@ -350,7 +369,12 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
   useEffect(() => {
     const nav = navRef.current;
     if (!nav) return;
-    const targetOpacity = sidebarOpen ? 0 : isTyping && !isExpanded ? 0.42 : 1;
+    const typingOpacity = isTouch ? 0.3 : 0.42;
+    const targetOpacity = sidebarOpen
+      ? 0
+      : isTyping && !isExpanded && !scrub
+      ? typingOpacity
+      : 1;
 
     if (prefersReducedMotion()) {
       nav.style.opacity = String(targetOpacity);
@@ -363,7 +387,7 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
       ease: 'power2.out',
       overwrite: 'auto',
     });
-  }, [isTyping, isExpanded, sidebarOpen]);
+  }, [isTyping, isExpanded, sidebarOpen, isTouch, scrub]);
 
   useEffect(() => {
     const ticksEl = ticksWrapperRef.current;
@@ -430,6 +454,10 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
         ease: 'power3.out',
       });
 
+      // The touch rail never collapses from the panel, so it keeps its own
+      // resting opacity rather than being faded up to full strength
+      if (isTouch) return;
+
       gsap.fromTo(
         ticks,
         { scaleX: 0.6, opacity: 0.3 },
@@ -443,7 +471,7 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
         }
       );
     }
-  }, [isExpanded, headings.length]);
+  }, [isExpanded, headings.length, isTouch]);
 
   const handleItemHoverEnter = (idx: number, btn: HTMLButtonElement) => {
     if (!canHover()) return;
@@ -479,35 +507,78 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
       return;
     }
 
+    scrollToItem(item, prefersReducedMotion() ? 'auto' : 'smooth');
+    if (item.element && !prefersReducedMotion()) {
+      nudgeItem(item.element);
+    }
+  };
+
+  const scrollToItem = (item: OutlineHeadingItem, behavior: ScrollBehavior) => {
     if (item.level === 0 || !item.element) {
-      window.scrollTo({
-        top: 0,
-        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
-      });
+      window.scrollTo({ top: 0, behavior });
       return;
     }
 
     const rect = item.element.getBoundingClientRect();
     const targetY = window.scrollY + rect.top - window.innerHeight * 0.22;
+    window.scrollTo({ top: Math.max(0, targetY), behavior });
+  };
 
-    window.scrollTo({
-      top: Math.max(0, targetY),
-      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+  const nudgeItem = (element: HTMLElement) => {
+    gsap.fromTo(
+      element,
+      { x: 4 },
+      {
+        x: 0,
+        duration: 0.45,
+        ease: 'power3.out',
+        overwrite: 'auto',
+      }
+    );
+  };
+
+  // Touch rail: drag along it like a phone's A–Z contacts index. The
+  // page follows the finger within this scene; lifting it on another
+  // scene opens that scene
+  const scrubTo = (clientY: number) => {
+    const rail = ticksWrapperRef.current;
+    const nav = navRef.current;
+    if (!rail || !nav || headings.length === 0) return;
+    const rect = rail.getBoundingClientRect();
+    const ratio = (clientY - rect.top) / Math.max(rect.height, 1);
+    const index = Math.min(
+      headings.length - 1,
+      Math.max(0, Math.floor(ratio * headings.length))
+    );
+    const navTop = nav.getBoundingClientRect().top;
+    setScrub({
+      index,
+      y: Math.min(rect.bottom, Math.max(rect.top, clientY)) - navTop,
     });
 
-    if (!prefersReducedMotion()) {
-      gsap.fromTo(
-        item.element,
-        { x: 4 },
-        {
-          x: 0,
-          duration: 0.45,
-          ease: 'power3.out',
-          overwrite: 'auto',
-        }
-      );
+    if (index === scrubIndexRef.current) return;
+    scrubIndexRef.current = index;
+    const item = headings[index];
+    if (!item.unitId || item.unitId === activeUnitId) {
+      scrollToItem(item, 'auto');
     }
   };
+
+  const endScrub = (commit: boolean) => {
+    const index = scrubIndexRef.current;
+    scrubIndexRef.current = null;
+    setScrub(null);
+    if (!commit || index === null || !headings[index]) return;
+    const item = headings[index];
+    setActiveIndex(index);
+    if (item.unitId && item.unitId !== activeUnitId && onSelectUnit) {
+      onSelectUnit(item.unitId);
+    } else if (item.element && !prefersReducedMotion()) {
+      nudgeItem(item.element);
+    }
+  };
+
+  const scrubItem = scrub ? headings[scrub.index] : null;
 
   if (sidebarOpen) return null;
 
@@ -524,7 +595,13 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
           setHoveredIndex(null);
         }
       }}
-      onFocus={() => setIsExpanded(true)}
+      onFocus={(e) => {
+        // A tap focuses the rail on touch screens; opening the panel then
+        // let the same tap land on (and close) it. Only keyboard focus opens it
+        if (!isTouch || e.target.matches(':focus-visible')) {
+          setIsExpanded(true);
+        }
+      }}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node)) {
           setIsExpanded(false);
@@ -537,26 +614,81 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
       className="no-print fixed top-[28vh] select-none md:!left-3 lg:!left-5"
     >
       <div className="relative flex items-start">
-        {/* Resting State: Minimal Horizontal Tick Marks (tappable on mobile, hoverable on desktop) */}
+        {/* Resting State: Minimal Horizontal Tick Marks (drag to scrub on touch, hover to expand on desktop) */}
         <button
           ref={ticksWrapperRef}
           type="button"
-          aria-label="Expand document outline"
+          aria-label={
+            isTouch ? 'Document outline: drag to scroll' : 'Expand document outline'
+          }
           aria-expanded={isExpanded}
-          onClick={() => setIsExpanded(true)}
-          className="flex min-h-11 min-w-9 flex-col justify-center gap-2 py-2 pr-3 text-start md:gap-2.5"
+          onClick={() => {
+            if (!isTouch) setIsExpanded(true);
+          }}
+          onPointerDown={(e) => {
+            if (!isTouch || e.pointerType === 'mouse') return;
+            e.currentTarget.setPointerCapture(e.pointerId);
+            scrubTo(e.clientY);
+          }}
+          onPointerMove={(e) => {
+            if (scrubIndexRef.current === null) return;
+            scrubTo(e.clientY);
+          }}
+          onPointerUp={() => {
+            if (scrubIndexRef.current !== null) endScrub(true);
+          }}
+          onPointerCancel={() => endScrub(false)}
+          onContextMenu={(e) => {
+            if (isTouch) e.preventDefault();
+          }}
+          style={
+            isTouch
+              ? {
+                  touchAction: 'none',
+                  WebkitTouchCallout: 'none',
+                  height: `min(${headings.length * 9 + 16}px, 46dvh)`,
+                }
+              : undefined
+          }
+          className={
+            isTouch
+              ? 'flex w-6 flex-col justify-between py-2 pr-2 text-start'
+              : 'flex min-h-11 min-w-9 flex-col justify-center gap-2 py-2 pr-3 text-start md:gap-2.5'
+          }
         >
           {headings.map((item, idx) => {
-            const isActive = idx === activeIndex;
+            const isScrubbed = scrub?.index === idx;
+            const isActive = scrub ? isScrubbed : idx === activeIndex;
             const isCurrentUnitHeader =
               item.level === 0 && item.unitId && item.unitId === activeUnitId;
-            const widthPx = isActive
+            const widthPx = isTouch
+              ? isActive
+                ? 12
+                : item.level === 0 || item.level === 1
+                ? 9
+                : item.level === 2
+                ? 6
+                : 4
+              : isActive
               ? 18
               : item.level === 0 || item.level === 1
               ? 13
               : item.level === 2
               ? 9
               : 6;
+            const opacity = isTouch
+              ? isActive
+                ? 0.9
+                : isCurrentUnitHeader
+                ? 0.5
+                : item.level === 0
+                ? 0.45
+                : 0.3
+              : isActive
+              ? 1
+              : isCurrentUnitHeader
+              ? 0.85
+              : 0.55;
 
             return (
               <span
@@ -566,7 +698,13 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
                 }}
                 style={{
                   width: `${widthPx}px`,
-                  height: isActive || isCurrentUnitHeader ? '2.5px' : '2px',
+                  height: isTouch
+                    ? isActive
+                      ? '2px'
+                      : '1.5px'
+                    : isActive || isCurrentUnitHeader
+                    ? '2.5px'
+                    : '2px',
                   transformOrigin: 'left center',
                   backgroundColor:
                     isActive || isCurrentUnitHeader
@@ -574,7 +712,7 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
                       : item.level === 0
                       ? 'var(--ink-3)'
                       : 'var(--ink-4)',
-                  opacity: isActive ? 1 : isCurrentUnitHeader ? 0.85 : 0.55,
+                  opacity,
                 }}
                 className="block rounded-full transition-[width,background-color,opacity] duration-200 ease-out"
               />
@@ -582,7 +720,40 @@ export const DocumentOutline: React.FC<DocumentOutlineProps> = ({
           })}
         </button>
 
-        {/* Hovered / Tapped State: Expanded Section List */}
+        {/* Touch scrub: the name of the item under the finger */}
+        {scrubItem && scrub && (
+          <div
+            aria-live="polite"
+            style={{
+              top: scrub.y,
+              backgroundColor:
+                'color-mix(in srgb, var(--bg-elevated) 96%, transparent)',
+              boxShadow: 'var(--elevation-floating)',
+              color: 'var(--ink-1)',
+            }}
+            className="pointer-events-none absolute left-7 flex max-w-[min(16rem,70vw)] -translate-y-1/2 items-center gap-1.5 rounded-full px-3 py-1.5 backdrop-blur-md"
+          >
+            {scrubItem.sublabel && scrubItem.level !== 0 && (
+              <span
+                style={{ color: 'var(--ink-3)' }}
+                className="shrink-0 font-mono text-[9.5px] font-semibold uppercase tracking-[0.06em]"
+              >
+                {scrubItem.sublabel}
+              </span>
+            )}
+            <span
+              className={`truncate ${
+                scrubItem.kindTag === 'slugline'
+                  ? 'font-mono text-[11px] font-semibold uppercase'
+                  : 'font-sans text-xs font-medium'
+              }`}
+            >
+              {scrubItem.text}
+            </span>
+          </div>
+        )}
+
+        {/* Hovered / Keyboard-focused State: Expanded Section List */}
         <div
           ref={labelsWrapperRef}
           aria-hidden={!isExpanded}

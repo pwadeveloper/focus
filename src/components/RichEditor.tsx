@@ -494,7 +494,11 @@ export const RichEditor: React.FC<RichEditorProps> = ({
             : activeBlock?.getBoundingClientRect().top ?? 0;
 
         if (targetY > 0) {
-          const idealViewportY = window.innerHeight * 0.44;
+          // Aim within the part of the screen the keyboard leaves visible
+          const vv = window.visualViewport;
+          const idealViewportY = vv
+            ? vv.offsetTop + vv.height * 0.44
+            : window.innerHeight * 0.44;
           const delta = targetY - idealViewportY;
           if (Math.abs(delta) > 18) {
             window.scrollBy({

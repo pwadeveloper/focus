@@ -797,6 +797,43 @@ export const TopBar: React.FC<TopBarProps> = ({
                 })}
               </div>
             </div>
+
+            {/* Typewriter toggle for phones, where the top bar has no room for it */}
+            {viewMode === 'write' && (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.typewriterMode}
+                onClick={() =>
+                  onUpdateSettings({ typewriterMode: !settings.typewriterMode })
+                }
+                className="mt-3.5 flex w-full items-center justify-between gap-3 text-start sm:hidden"
+              >
+                <span>
+                  <span className="block text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--ink-3)]">
+                    Typewriter
+                  </span>
+                  <span className="mt-0.5 block text-[var(--ink-2)]">
+                    Keep the line you’re typing in view
+                  </span>
+                </span>
+                <span
+                  style={{
+                    backgroundColor: settings.typewriterMode
+                      ? 'var(--accent)'
+                      : 'var(--border-strong)',
+                  }}
+                  className="relative h-5 w-9 shrink-0 rounded-full transition-colors duration-150 ease-out"
+                >
+                  <span
+                    style={{ backgroundColor: 'var(--bg-elevated)' }}
+                    className={`absolute top-0.5 size-4 rounded-full shadow-sm transition-transform duration-150 ease-out ${
+                      settings.typewriterMode ? 'translate-x-[18px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </span>
+              </button>
+            )}
           </div>
         )}
 

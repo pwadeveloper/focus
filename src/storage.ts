@@ -4,6 +4,7 @@ const SETTINGS_KEY = 'focus:settings';
 const DOCS_KEY = 'focus:documents';
 const ACTIVE_DOC_KEY = 'focus:activeDocId';
 const WELCOME_KEY = 'focus:welcomed';
+const TYPEWRITER_CHOSEN_KEY = 'focus:typewriterChosen';
 
 const DB_NAME = 'FocusWriterDB';
 const DB_VERSION = 1;
@@ -141,13 +142,43 @@ function normalizeLegacyDocuments(docs: DocumentItem[]): DocumentItem[] {
   return screenplays.length > 0 ? screenplays : [STARTER_SCREENPLAY];
 }
 
+// Phones and tablets write with typewriter scrolling on, so the line being
+// typed stays in view above the keyboard. A writer who has switched it
+// either way on this device keeps their choice
+function isTouchDevice(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    window.matchMedia('(pointer: coarse)').matches
+  );
+}
+
+export function markTypewriterChosen(): void {
+  try {
+    localStorage.setItem(TYPEWRITER_CHOSEN_KEY, '1');
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function deviceDefaults(): WriterSettings {
+  return isTouchDevice()
+    ? { ...DEFAULT_SETTINGS, typewriterMode: true }
+    : DEFAULT_SETTINGS;
+}
+
 export function loadSettings(): WriterSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (!raw) return deviceDefaults();
+    const saved = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    // Saved settings hold typewriterMode even when the writer never touched
+    // it, so only an explicit choice overrides the device default
+    if (!localStorage.getItem(TYPEWRITER_CHOSEN_KEY)) {
+      saved.typewriterMode = deviceDefaults().typewriterMode;
+    }
+    return saved;
   } catch {
-    return DEFAULT_SETTINGS;
+    return deviceDefaults();
   }
 }
 
