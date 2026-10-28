@@ -4,6 +4,10 @@ Focus is a local-first, distraction-free screenwriting app. You write one scene 
 
 When you start typing, the top bar and bottom status pill fade out so only the page and your script remain on screen. Moving the mouse or pressing `Esc` brings the controls back.
 
+## Home page
+
+New writers land on a welcome page that introduces Focus, offers to start a new screenplay or explore the sample script, and credits [filmschool.Africa](https://filmschool.africa) (The Film & Content School Africa), which powers Focus. After a writer opens or starts a script, later visits go straight back to it. The house button at the left of the top bar returns to the welcome page.
+
 ## Writing a screenplay
 
 A screenplay in Focus is a list of scenes. You focus on one scene at a time and move between them with the previous/next turn bar at the bottom of the page, the **All Scenes** button, or the margin outline.
@@ -21,7 +25,7 @@ Each paragraph in a scene has a screenplay element type: scene heading, action, 
 ## Title page and export
 
 - **Title page.** Edit the title, episode, credit ("Written by", "Screenplay by", "Teleplay by"), author, source material, draft date, contact, notes, and copyright from the **Title page** button in the timeline view or from the screenplay guide.
-- **Paginated export.** **Screenplay pages (.html)** in the export menu opens a dialog with a live page preview: Courier 12, 54 lines a page, with an optional title page, page numbers, `(MORE)`/`(CONT'D)` across page breaks, `(CONT'D)` for returning speakers, scene numbers, and a custom header and footer (`{title}`, `{date}`, `{revision}`, `{page}`).
+- **Paginated export.** **Screenplay pages (.html)** in the export menu opens a dialog with a live page preview. The dialog edits the title page credit, writer name, contact details, and draft date directly (**More fields…** opens the full title page editor), and exports Courier 12, 54 lines a page, with an optional title page, page numbers, `(MORE)`/`(CONT'D)` across page breaks, `(CONT'D)` for returning speakers, scene numbers, and a custom header and footer (`{title}`, `{date}`, `{revision}`, `{page}`).
 - **Revision tracking.** Lock a draft in a production revision color (White, Blue, Pink, Yellow, and so on). Later exports mark every changed line with an asterisk.
 - **Other formats.** Copy or download the script as Markdown/Fountain (`.md`) or plain text (`.txt`), or print and save as PDF (`Cmd/Ctrl + P`) through `@media print` rules that strip all app chrome.
 
@@ -71,6 +75,7 @@ All scripts and settings save locally in `localStorage` (keys prefixed `focus:`)
 ## Project layout
 
 - `src/App.tsx` manages scripts, the active scene, keyboard shortcuts, and exports.
+- `src/components/WelcomeHome.tsx` renders the welcome home page and the filmschool.Africa credit (logo in `src/assets/`).
 - `src/components/RichEditor.tsx` renders the `contentEditable` scene canvas, element triggers, dual dialogue layout, focus dimming, typewriter scroll, and the scene turn bar.
 - `src/components/ScreenplayTools.tsx` provides the scene heading, character, and transition autocomplete and the element switcher bar.
 - `src/components/ScreenplayGuide.tsx` renders the searchable screenplay guide panel.

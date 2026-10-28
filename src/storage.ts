@@ -3,6 +3,7 @@ import { DocumentItem, WriterSettings } from './types';
 const SETTINGS_KEY = 'focus:settings';
 const DOCS_KEY = 'focus:documents';
 const ACTIVE_DOC_KEY = 'focus:activeDocId';
+const WELCOME_KEY = 'focus:welcomed';
 
 const DB_NAME = 'FocusWriterDB';
 const DB_VERSION = 1;
@@ -193,6 +194,23 @@ export function loadActiveDocIdSync(docs: DocumentItem[]): string {
 export function saveActiveDocIdSync(id: string): void {
   try {
     localStorage.setItem(ACTIVE_DOC_KEY, id);
+  } catch {
+    // Ignore
+  }
+}
+
+/** New writers land on the welcome page until they open or start a script. */
+export function hasSeenWelcome(): boolean {
+  try {
+    return localStorage.getItem(WELCOME_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function markWelcomeSeen(): void {
+  try {
+    localStorage.setItem(WELCOME_KEY, '1');
   } catch {
     // Ignore
   }

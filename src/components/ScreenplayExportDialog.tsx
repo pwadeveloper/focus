@@ -1,13 +1,23 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { Download, Lock, Printer, X } from 'lucide-react';
-import { DocumentItem, RevisionColor, ScreenplayExportSettings } from '../types';
+import {
+  DocumentItem,
+  RevisionColor,
+  ScreenplayExportSettings,
+  TitlePage,
+} from '../types';
 import {
   REVISION_COLORS,
   fillTokens,
   renderScreenplayHtml,
   resolveExportSettings,
 } from '../screenplayExport';
+import {
+  DEFAULT_TITLE_PAGE_CREDIT,
+  TITLE_PAGE_CREDIT_OPTIONS,
+  todayDraftDate,
+} from '../editorUtils';
 import { canHover, prefersReducedMotion } from '../motion';
 
 interface ScreenplayExportDialogProps {
@@ -15,13 +25,22 @@ interface ScreenplayExportDialogProps {
   doc: DocumentItem;
   onClose: () => void;
   onChangeSettings: (patch: Partial<ScreenplayExportSettings>) => void;
+  onChangeTitlePage: (patch: Partial<TitlePage>) => void;
+  /** Open the full title page editor (episode, source, notes, copyright). */
+  onOpenTitlePage: () => void;
   /** Snapshot the current draft as the revision baseline. */
   onLockDraft: (color: RevisionColor) => void;
   onDownload: () => void;
 }
 
-const fieldClass =
-  'h-9 w-full rounded-xl px-3 text-base text-[var(--ink-1)] transition-[box-shadow,background-color] duration-150 ease-out placeholder:text-[var(--ink-4)] focus:bg-[var(--bg-elevated)] focus:shadow-[inset_0_0_0_1px_var(--border-strong)] focus:outline-none sm:text-[13px]';
+const fieldBaseClass =
+  'w-full rounded-xl px-3 text-base text-[var(--ink-1)] transition-[box-shadow,background-color] duration-150 ease-out placeholder:text-[var(--ink-4)] focus:bg-[var(--bg-elevated)] focus:shadow-[inset_0_0_0_1px_var(--border-strong)] focus:outline-none sm:text-[13px]';
+const fieldClass = `${fieldBaseClass} h-9`;
+const labelClass = 'mb-1 block text-xs font-medium text-[var(--ink-2)]';
+const sectionHeadingClass =
+  'text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--ink-3)]';
+const textLinkClass =
+  'relative text-xs font-medium text-[var(--ink-2)] underline decoration-[var(--border-strong)] underline-offset-2 transition-colors before:absolute before:-inset-x-2 before:-inset-y-1.5 hover:text-[var(--ink-1)] hover:decoration-[var(--ink-1)]';
 
 const Toggle: React.FC<{
   id: string;
@@ -95,6 +114,8 @@ export const ScreenplayExportDialog: React.FC<ScreenplayExportDialogProps> = ({
   doc,
   onClose,
   onChangeSettings,
+  onChangeTitlePage,
+  onOpenTitlePage,
   onLockDraft,
   onDownload,
 }) => {
@@ -157,6 +178,7 @@ export const ScreenplayExportDialog: React.FC<ScreenplayExportDialogProps> = ({
 
   const baseline = doc.revisionBaseline;
   const headerExample = settings.header ? fillTokens(settings.header, doc, 2) : '';
+  const tp = doc.titlePage ?? {};
 
   return (
     <div
@@ -200,16 +222,104 @@ export const ScreenplayExportDialog: React.FC<ScreenplayExportDialogProps> = ({
           {/* Options */}
           <div className="focus-scroller min-h-0 space-y-5 overflow-y-auto pr-1">
             <section>
-              <h3 className="mb-2 text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--ink-3)]">
-                Header & footer
-              </h3>
+              <div className="mb-2 flex items-baseline justify-between gap-2">
+                <h3 className={sectionHeadingClass}>Title page details</h3>
+                <button type="button" onClick={onOpenTitlePage} className={textLinkClass}>
+                  More fields…
+                </button>
+              </div>
+              {!settings.titlePage && (
+                <p className="mb-2.5 text-[11px] leading-relaxed text-[var(--ink-3)]">
+                  The title page is off. Turn it on under Pages to print these details.
+                </p>
+              )}
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-2.5">
+                  <div>
+                    <label htmlFor="sp-credit" className={labelClass}>
+                      Credit
+                    </label>
+                    <input
+                      ref={firstFieldRef}
+                      id="sp-credit"
+                      type="text"
+                      list="sp-credit-options"
+                      value={tp.credit ?? DEFAULT_TITLE_PAGE_CREDIT}
+                      onChange={(e) => onChangeTitlePage({ credit: e.target.value })}
+                      placeholder="Written by"
+                      style={{ backgroundColor: 'var(--bg-surface)' }}
+                      className={fieldClass}
+                    />
+                    <datalist id="sp-credit-options">
+                      {TITLE_PAGE_CREDIT_OPTIONS.map((option) => (
+                        <option key={option} value={option} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <label htmlFor="sp-author" className={labelClass}>
+                      Writer name
+                    </label>
+                    <input
+                      id="sp-author"
+                      type="text"
+                      autoComplete="name"
+                      value={tp.author ?? ''}
+                      onChange={(e) => onChangeTitlePage({ author: e.target.value })}
+                      placeholder="Your name"
+                      style={{ backgroundColor: 'var(--bg-surface)' }}
+                      className={fieldClass}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="sp-contact" className={labelClass}>
+                    Contact details <span className="font-normal text-[var(--ink-3)]">lower left</span>
+                  </label>
+                  <textarea
+                    id="sp-contact"
+                    rows={3}
+                    value={tp.contact ?? ''}
+                    onChange={(e) => onChangeTitlePage({ contact: e.target.value })}
+                    placeholder={'Email\nPhone\nAgent or representation'}
+                    style={{ backgroundColor: 'var(--bg-surface)' }}
+                    className={`${fieldBaseClass} block resize-none py-2 leading-snug`}
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 flex items-baseline justify-between gap-2">
+                    <label htmlFor="sp-draft" className="text-xs font-medium text-[var(--ink-2)]">
+                      Draft date <span className="font-normal text-[var(--ink-3)]">optional</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => onChangeTitlePage({ draftDate: todayDraftDate() })}
+                      className={textLinkClass}
+                    >
+                      Today
+                    </button>
+                  </div>
+                  <input
+                    id="sp-draft"
+                    type="text"
+                    value={tp.draftDate ?? ''}
+                    onChange={(e) => onChangeTitlePage({ draftDate: e.target.value })}
+                    placeholder="First draft, October 2026"
+                    style={{ backgroundColor: 'var(--bg-surface)' }}
+                    className={fieldClass}
+                  />
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <h3 className={`mb-2 ${sectionHeadingClass}`}>Header & footer</h3>
               <div className="space-y-2.5">
                 <div>
-                  <label htmlFor="sp-header" className="mb-1 block text-xs font-medium text-[var(--ink-2)]">
+                  <label htmlFor="sp-header" className={labelClass}>
                     Header <span className="font-normal text-[var(--ink-3)]">top left</span>
                   </label>
                   <input
-                    ref={firstFieldRef}
                     id="sp-header"
                     type="text"
                     value={settings.header}

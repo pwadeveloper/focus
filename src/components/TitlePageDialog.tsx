@@ -2,7 +2,11 @@ import React, { useEffect, useRef } from 'react';
 import gsap from 'gsap';
 import { X } from 'lucide-react';
 import { DocumentItem, TitlePage } from '../types';
-import { DEFAULT_TITLE_PAGE_CREDIT } from '../editorUtils';
+import {
+  DEFAULT_TITLE_PAGE_CREDIT,
+  TITLE_PAGE_CREDIT_OPTIONS,
+  todayDraftDate,
+} from '../editorUtils';
 import { canHover, prefersReducedMotion } from '../motion';
 
 interface TitlePageDialogProps {
@@ -12,21 +16,6 @@ interface TitlePageDialogProps {
   onChangeTitle: (title: string) => void;
   onChangeTitlePage: (patch: Partial<TitlePage>) => void;
 }
-
-const CREDIT_OPTIONS = [
-  'Written by',
-  'Screenplay by',
-  'Teleplay by',
-  'Story by',
-  'Created by',
-];
-
-const todayLabel = () =>
-  new Date().toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
 
 const fieldClass =
   'w-full rounded-xl px-3 text-base text-[var(--ink-1)] transition-[box-shadow,background-color] duration-150 ease-out placeholder:text-[var(--ink-4)] focus:bg-[var(--bg-elevated)] focus:shadow-[inset_0_0_0_1px_var(--border-strong)] focus:outline-none sm:text-[13px]';
@@ -217,7 +206,7 @@ export const TitlePageDialog: React.FC<TitlePageDialogProps> = ({
                   className={`${fieldClass} h-10`}
                 />
                 <datalist id="tp-credit-options">
-                  {CREDIT_OPTIONS.map((option) => (
+                  {TITLE_PAGE_CREDIT_OPTIONS.map((option) => (
                     <option key={option} value={option} />
                   ))}
                 </datalist>
@@ -267,7 +256,7 @@ export const TitlePageDialog: React.FC<TitlePageDialogProps> = ({
                   action={
                     <button
                       type="button"
-                      onClick={() => onChangeTitlePage({ draftDate: todayLabel() })}
+                      onClick={() => onChangeTitlePage({ draftDate: todayDraftDate() })}
                       className="relative text-xs font-medium text-[var(--ink-2)] underline decoration-[var(--border-strong)] underline-offset-2 transition-colors before:absolute before:-inset-x-2 before:-inset-y-1.5 hover:text-[var(--ink-1)] hover:decoration-[var(--ink-1)]"
                     >
                       Today

@@ -20,6 +20,7 @@ import {
   Archive,
   GitCommitHorizontal,
   CircleHelp,
+  House,
 } from 'lucide-react';
 import {
   FocusMode,
@@ -36,6 +37,8 @@ import { WORK_KIND_TONE, toneChip } from '../palette';
 import { guideShortcut } from '../screenplay';
 
 interface TopBarProps {
+  /** Return to the welcome home page. */
+  onOpenHome: () => void;
   isTyping: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
@@ -62,6 +65,7 @@ interface TopBarProps {
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
+  onOpenHome,
   isTyping,
   sidebarOpen,
   onToggleSidebar,
@@ -202,6 +206,17 @@ export const TopBar: React.FC<TopBarProps> = ({
     >
       {/* Left: Drawer Trigger + Format Badge + Document Breadcrumb + New Script */}
       <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          onClick={onOpenHome}
+          {...btnHover}
+          aria-label="Home"
+          title="Home"
+          className="relative flex size-9 items-center justify-center rounded-lg text-[var(--ink-2)] transition-colors duration-150 ease-out before:absolute before:-inset-1 hover:bg-[var(--bg-subtle-hover)] hover:text-[var(--ink-1)]"
+        >
+          <House className="size-4" strokeWidth={1.8} />
+        </button>
+
         <button
           type="button"
           onClick={onToggleSidebar}

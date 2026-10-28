@@ -16,6 +16,9 @@ import {
   hydrateDocumentsFromIndexedDB,
   createNewWorkItem,
   NewWorkOptions,
+  STARTER_SCREENPLAY,
+  hasSeenWelcome,
+  markWelcomeSeen,
 } from './storage';
 import {
   computeDocumentTotalMetrics,
@@ -37,6 +40,7 @@ import { ProjectCabinetView } from './components/ProjectCabinetView';
 import { NewWorkModal } from './components/NewWorkModal';
 import { BottomHud } from './components/BottomHud';
 import { ShortcutsModal } from './components/ShortcutsModal';
+import { WelcomeHome } from './components/WelcomeHome';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<WriterSettings>(() => loadSettings());
@@ -45,6 +49,7 @@ export const App: React.FC = () => {
     loadActiveDocIdSync(loadDocumentsSync())
   );
   const [viewMode, setViewMode] = useState<WorkspaceViewMode>('write');
+  const [showHome, setShowHome] = useState(() => !hasSeenWelcome());
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [newWorkModalOpen, setNewWorkModalOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -317,6 +322,20 @@ export const App: React.FC = () => {
     [updateActiveDocument]
   );
 
+  const handleLeaveHome = useCallback(() => {
+    markWelcomeSeen();
+    setShowHome(false);
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }, []);
+
+  const handleOpenHome = useCallback(() => {
+    setSidebarOpen(false);
+    setScreenplayGuideOpen(false);
+    setIsTyping(false);
+    setShowHome(true);
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }, []);
+
   // Create a new screenplay
   const handleCreateWork = useCallback(
     (title: string, options?: NewWorkOptions) => {
@@ -335,8 +354,9 @@ export const App: React.FC = () => {
       }
       setSidebarOpen(false);
       setIsTyping(false);
+      handleLeaveHome();
     },
-    [persistDocs, updateSettings]
+    [persistDocs, handleLeaveHome]
   );
 
   const handleSelectDoc = useCallback((id: string) => {
@@ -452,6 +472,8 @@ export const App: React.FC = () => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       // The editor already handled it (e.g. ⌘⇧D dual dialogue)
       if (e.defaultPrevented || e.isComposing) return;
+      // The welcome page has no workspace for these shortcuts to act on
+      if (showHome) return;
       if (e.key === 'Escape') {
         setIsTyping(false);
         if (sidebarOpen) setSidebarOpen(false);
@@ -512,6 +534,7 @@ export const App: React.FC = () => {
     settings.focusMode,
     settings.typewriterMode,
     sidebarOpen,
+    showHome,
     updateSettings,
   ]);
 
@@ -566,131 +589,143 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-dvh w-full bg-[var(--bg-canvas)] text-[var(--ink-1)] selection:bg-[var(--selection-bg)]">
-      <a
-        href="#manuscript-title"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-[var(--bg-elevated)] focus:px-3 focus:py-2 focus:text-xs focus:font-medium focus:text-[var(--ink-1)]"
-      >
-        Skip to writing canvas
-      </a>
-
-      <TopBar
-        isTyping={isTyping && viewMode === 'write'}
-        sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => setSidebarOpen((v) => !v)}
-        workKind={activeDoc.kind}
-        docTitle={activeDoc.title}
-        activeUnitBadge={activeUnitBadge}
-        viewMode={viewMode}
-        onToggleViewMode={() =>
-          setViewMode((v) => (v === 'birdseye' ? 'write' : 'birdseye'))
-        }
-        onToggleCabinetView={() =>
-          setViewMode((v) => (v === 'cabinet' ? 'write' : 'cabinet'))
-        }
-        onOpenNewWorkModal={handleOpenNewWorkModal}
-        saveStatus={saveStatus}
-        settings={settings}
-        onUpdateSettings={updateSettings}
-        onExportMarkdown={handleExportMarkdown}
-        onExportText={handleExportText}
-        onExportHtml={handleExportHtml}
-        onCopyMarkdown={handleCopyMarkdown}
-        onCopyPlainText={handleCopyPlainText}
-        onOpenShortcuts={() => setShortcutsOpen(true)}
-        onOpenScreenplayExport={() => setScreenplayExportOpen(true)}
-        screenplayGuideOpen={screenplayGuideOpen}
-        onToggleScreenplayGuide={() => {
-          setViewMode('write');
-          setScreenplayGuideOpen((v) => !v);
-        }}
-      />
-
-      <SidebarDrawer
-        open={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-        documents={documents}
-        activeDocId={activeDoc.id}
-        onSelectDoc={handleSelectDoc}
-        onSelectDocUnit={handleSelectDocUnit}
-        onOpenCabinetView={() => setViewMode('cabinet')}
-        onOpenNewWorkModal={handleOpenNewWorkModal}
-        onTogglePin={handleTogglePin}
-        onDuplicateDoc={handleDuplicateDoc}
-        onDeleteDoc={handleDeleteDoc}
-      />
-
-      {viewMode === 'cabinet' ? (
-        <ProjectCabinetView
-          documents={documents}
-          activeDocId={activeDoc.id}
-          onSelectDocAndWrite={handleSelectDoc}
-          onSelectDocBirdsEye={handleSelectDocBirdsEye}
-          onOpenNewWorkModal={handleOpenNewWorkModal}
-          onTogglePin={handleTogglePin}
-          onDeleteDoc={handleDeleteDoc}
-        />
-      ) : viewMode === 'birdseye' ? (
-        <BirdsEyeView
-          doc={activeDoc}
-          activeUnitId={activeUnit?.id || ''}
-          onSelectUnitAndWrite={handleSelectUnitAndWrite}
-          onUpdateDocTitle={(newTitle) =>
-            updateActiveDocument((d) => ({ ...d, title: newTitle }))
-          }
-          onUpdateDocSubtitle={(newSubtitle) =>
-            updateActiveDocument((d) => ({ ...d, subtitle: newSubtitle }))
-          }
-          onOpenTitlePage={() => setTitlePageOpen(true)}
-          onAddUnit={() => handleAddUnit(false)}
-          onUpdateUnitMeta={handleUpdateUnitMeta}
-          onMoveUnit={handleMoveUnit}
-          onDeleteUnit={handleDeleteUnit}
-          onOpenProjectCabinet={() => setViewMode('cabinet')}
+      {showHome ? (
+        <WelcomeHome
+          continueTitle={activeDoc.title}
+          isSample={activeDoc.id === STARTER_SCREENPLAY.id}
+          onStartNew={handleOpenNewWorkModal}
+          onContinue={handleLeaveHome}
         />
       ) : (
-        <RichEditor
-          docId={activeDoc.id}
-          workKind={activeDoc.kind}
-          docTitle={activeDoc.title}
-          unitId={activeUnit ? activeUnit.id : activeDoc.id}
-          unitTitle={activeUnit ? activeUnit.title : activeDoc.title}
-          unitSlugline={activeUnit?.slugline}
-          initialHtml={
-            activeUnit ? activeUnit.contentHtml : activeDoc.contentHtml
-          }
-          units={activeDoc.units}
-          knownCharacters={knownCharacters}
-          knownLocations={knownLocations}
-          fontVoice={settings.fontVoice}
-          fontSize={settings.fontSize}
-          measure={settings.measure}
-          focusMode={settings.focusMode}
-          typewriterMode={settings.typewriterMode}
-          sidebarOpen={sidebarOpen}
-          isTyping={isTyping}
-          onChangeTitle={handleEditorTitleChange}
-          onChangeSlugline={handleEditorSluglineChange}
-          onChangeHtml={handleEditorHtmlChange}
-          onSelectUnit={handleSelectUnitAndWrite}
-          onCreateNextUnit={() => handleAddUnit(true)}
-          onOpenBirdsEye={() => setViewMode('birdseye')}
-          onUserTyping={handleUserTyping}
-          screenplayGuideOpen={screenplayGuideOpen}
-          onCloseScreenplayGuide={() => setScreenplayGuideOpen(false)}
-          onToggleScreenplayGuide={() => setScreenplayGuideOpen((v) => !v)}
-          onOpenTitlePage={() => setTitlePageOpen(true)}
-        />
-      )}
+        <>
+          <a
+            href="#manuscript-title"
+            className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-[var(--bg-elevated)] focus:px-3 focus:py-2 focus:text-xs focus:font-medium focus:text-[var(--ink-1)]"
+          >
+            Skip to writing canvas
+          </a>
 
-      <BottomHud
-        isTyping={isTyping && viewMode === 'write'}
-        metrics={metrics}
-        wordGoal={activeDoc.wordGoal || settings.wordGoal}
-        onChangeWordGoal={(goal) => {
-          updateSettings({ wordGoal: goal });
-          updateActiveDocument((d) => ({ ...d, wordGoal: goal }));
-        }}
-      />
+          <TopBar
+            onOpenHome={handleOpenHome}
+            isTyping={isTyping && viewMode === 'write'}
+            sidebarOpen={sidebarOpen}
+            onToggleSidebar={() => setSidebarOpen((v) => !v)}
+            workKind={activeDoc.kind}
+            docTitle={activeDoc.title}
+            activeUnitBadge={activeUnitBadge}
+            viewMode={viewMode}
+            onToggleViewMode={() =>
+              setViewMode((v) => (v === 'birdseye' ? 'write' : 'birdseye'))
+            }
+            onToggleCabinetView={() =>
+              setViewMode((v) => (v === 'cabinet' ? 'write' : 'cabinet'))
+            }
+            onOpenNewWorkModal={handleOpenNewWorkModal}
+            saveStatus={saveStatus}
+            settings={settings}
+            onUpdateSettings={updateSettings}
+            onExportMarkdown={handleExportMarkdown}
+            onExportText={handleExportText}
+            onExportHtml={handleExportHtml}
+            onCopyMarkdown={handleCopyMarkdown}
+            onCopyPlainText={handleCopyPlainText}
+            onOpenShortcuts={() => setShortcutsOpen(true)}
+            onOpenScreenplayExport={() => setScreenplayExportOpen(true)}
+            screenplayGuideOpen={screenplayGuideOpen}
+            onToggleScreenplayGuide={() => {
+              setViewMode('write');
+              setScreenplayGuideOpen((v) => !v);
+            }}
+          />
+
+          <SidebarDrawer
+            open={sidebarOpen}
+            onClose={() => setSidebarOpen(false)}
+            documents={documents}
+            activeDocId={activeDoc.id}
+            onSelectDoc={handleSelectDoc}
+            onSelectDocUnit={handleSelectDocUnit}
+            onOpenCabinetView={() => setViewMode('cabinet')}
+            onOpenNewWorkModal={handleOpenNewWorkModal}
+            onTogglePin={handleTogglePin}
+            onDuplicateDoc={handleDuplicateDoc}
+            onDeleteDoc={handleDeleteDoc}
+          />
+
+          {viewMode === 'cabinet' ? (
+            <ProjectCabinetView
+              documents={documents}
+              activeDocId={activeDoc.id}
+              onSelectDocAndWrite={handleSelectDoc}
+              onSelectDocBirdsEye={handleSelectDocBirdsEye}
+              onOpenNewWorkModal={handleOpenNewWorkModal}
+              onTogglePin={handleTogglePin}
+              onDeleteDoc={handleDeleteDoc}
+            />
+          ) : viewMode === 'birdseye' ? (
+            <BirdsEyeView
+              doc={activeDoc}
+              activeUnitId={activeUnit?.id || ''}
+              onSelectUnitAndWrite={handleSelectUnitAndWrite}
+              onUpdateDocTitle={(newTitle) =>
+                updateActiveDocument((d) => ({ ...d, title: newTitle }))
+              }
+              onUpdateDocSubtitle={(newSubtitle) =>
+                updateActiveDocument((d) => ({ ...d, subtitle: newSubtitle }))
+              }
+              onOpenTitlePage={() => setTitlePageOpen(true)}
+              onAddUnit={() => handleAddUnit(false)}
+              onUpdateUnitMeta={handleUpdateUnitMeta}
+              onMoveUnit={handleMoveUnit}
+              onDeleteUnit={handleDeleteUnit}
+              onOpenProjectCabinet={() => setViewMode('cabinet')}
+            />
+          ) : (
+            <RichEditor
+              docId={activeDoc.id}
+              workKind={activeDoc.kind}
+              docTitle={activeDoc.title}
+              unitId={activeUnit ? activeUnit.id : activeDoc.id}
+              unitTitle={activeUnit ? activeUnit.title : activeDoc.title}
+              unitSlugline={activeUnit?.slugline}
+              initialHtml={
+                activeUnit ? activeUnit.contentHtml : activeDoc.contentHtml
+              }
+              units={activeDoc.units}
+              knownCharacters={knownCharacters}
+              knownLocations={knownLocations}
+              fontVoice={settings.fontVoice}
+              fontSize={settings.fontSize}
+              measure={settings.measure}
+              focusMode={settings.focusMode}
+              typewriterMode={settings.typewriterMode}
+              sidebarOpen={sidebarOpen}
+              isTyping={isTyping}
+              onChangeTitle={handleEditorTitleChange}
+              onChangeSlugline={handleEditorSluglineChange}
+              onChangeHtml={handleEditorHtmlChange}
+              onSelectUnit={handleSelectUnitAndWrite}
+              onCreateNextUnit={() => handleAddUnit(true)}
+              onOpenBirdsEye={() => setViewMode('birdseye')}
+              onUserTyping={handleUserTyping}
+              screenplayGuideOpen={screenplayGuideOpen}
+              onCloseScreenplayGuide={() => setScreenplayGuideOpen(false)}
+              onToggleScreenplayGuide={() => setScreenplayGuideOpen((v) => !v)}
+              onOpenTitlePage={() => setTitlePageOpen(true)}
+            />
+          )}
+
+          <BottomHud
+            isTyping={isTyping && viewMode === 'write'}
+            metrics={metrics}
+            wordGoal={activeDoc.wordGoal || settings.wordGoal}
+            onChangeWordGoal={(goal) => {
+              updateSettings({ wordGoal: goal });
+              updateActiveDocument((d) => ({ ...d, wordGoal: goal }));
+            }}
+          />
+        </>
+      )}
 
       <NewWorkModal
         open={newWorkModalOpen}
@@ -698,8 +733,9 @@ export const App: React.FC = () => {
         onCreateWork={handleCreateWork}
       />
 
+      {/* The title page editor opens over export; export returns when it closes */}
       <ScreenplayExportDialog
-        open={screenplayExportOpen}
+        open={screenplayExportOpen && !titlePageOpen}
         doc={activeDoc}
         onClose={closeScreenplayExport}
         onChangeSettings={(patch) =>
@@ -708,6 +744,13 @@ export const App: React.FC = () => {
             screenplayExport: { ...d.screenplayExport, ...patch },
           }))
         }
+        onChangeTitlePage={(patch) =>
+          updateActiveDocument((d) => ({
+            ...d,
+            titlePage: { ...d.titlePage, ...patch },
+          }))
+        }
+        onOpenTitlePage={() => setTitlePageOpen(true)}
         onLockDraft={(color) =>
           updateActiveDocument((d) => ({
             ...d,

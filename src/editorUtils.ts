@@ -283,6 +283,23 @@ export function escapeHtml(text: string): string {
 
 export const DEFAULT_TITLE_PAGE_CREDIT = 'Written by';
 
+/** Byline suggestions offered by the title page credit fields. */
+export const TITLE_PAGE_CREDIT_OPTIONS = [
+  'Written by',
+  'Screenplay by',
+  'Teleplay by',
+  'Story by',
+  'Created by',
+];
+
+/** Today's date as a title page draft date, e.g. "October 28, 2026". */
+export const todayDraftDate = () =>
+  new Date().toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
 /** Fountain title page block: `Key: value` lines, multi-line values indented. */
 export function titlePageToFountain(doc: DocumentItem): string {
   const tp = doc.titlePage ?? {};
