@@ -116,6 +116,7 @@ export const RichEditor: React.FC<RichEditorProps> = ({
   const [isEmpty, setIsEmpty] = useState(false);
   const [selectionRect, setSelectionRect] = useState<SelectionRectInfo>({
     top: 0,
+    bottom: 0,
     left: 0,
     visible: false,
   });
@@ -471,13 +472,10 @@ export const RichEditor: React.FC<RichEditorProps> = ({
       if (!sel.isCollapsed && sel.toString().trim().length > 0) {
         const rect = range.getBoundingClientRect();
         if (rect.width > 0 || rect.height > 0) {
-          const clampedLeft = Math.min(
-            window.innerWidth - 190,
-            Math.max(190, rect.left + rect.width / 2)
-          );
           setSelectionRect({
-            top: rect.top - 10,
-            left: clampedLeft,
+            top: rect.top,
+            bottom: rect.bottom,
+            left: rect.left + rect.width / 2,
             visible: true,
           });
         }
@@ -543,6 +541,33 @@ export const RichEditor: React.FC<RichEditorProps> = ({
     document.addEventListener('selectionchange', handleSelectionChange);
     return () => document.removeEventListener('selectionchange', handleSelectionChange);
   }, [updateFocusAndToolbar]);
+
+  // Keep the formatting toolbar beside the selection as the page scrolls
+  // (typewriter mode scrolls on its own) or the window resizes
+  useEffect(() => {
+    if (!selectionRect.visible) return;
+    let raf = 0;
+    const follow = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+        const rect = sel.getRangeAt(0).getBoundingClientRect();
+        setSelectionRect((prev) =>
+          prev.visible
+            ? { top: rect.top, bottom: rect.bottom, left: rect.left + rect.width / 2, visible: true }
+            : prev
+        );
+      });
+    };
+    window.addEventListener('scroll', follow, { passive: true, capture: true });
+    window.addEventListener('resize', follow);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('scroll', follow, true);
+      window.removeEventListener('resize', follow);
+    };
+  }, [selectionRect.visible]);
 
   // ---------------------------------------------------------------------------
   // Screenplay block helpers

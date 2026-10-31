@@ -216,6 +216,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     <header
       ref={headerRef}
+      data-app-header
       style={{
         zIndex: 'var(--z-header)',
         backgroundColor: 'color-mix(in srgb, var(--bg-canvas) 86%, transparent)',

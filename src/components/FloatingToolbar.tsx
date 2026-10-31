@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useLayoutEffect, useRef } from 'react';
 import gsap from 'gsap';
 import {
   Bold,
@@ -14,10 +14,39 @@ import {
 } from 'lucide-react';
 import { gsapButtonHover, prefersReducedMotion } from '../motion';
 
+/** The selection's box in viewport pixels; left is its horizontal centre. */
 export interface SelectionRectInfo {
   top: number;
+  bottom: number;
   left: number;
   visible: boolean;
+}
+
+const GAP = 10;
+const EDGE = 8;
+
+/** Bottom edge of the app header while it's showing (it fades out as you type). */
+const headerBottom = () => {
+  const header = document.querySelector<HTMLElement>('[data-app-header]');
+  if (!header) return 0;
+  const style = getComputedStyle(header);
+  if (style.visibility === 'hidden' || Number(style.opacity) === 0) return 0;
+  return Math.max(0, header.getBoundingClientRect().bottom);
+};
+
+/** Above the selection, or below it when there's no room above, never over it. */
+function placeToolbar(el: HTMLElement, rect: SelectionRectInfo) {
+  const width = el.offsetWidth;
+  const height = el.offsetHeight;
+  const minTop = headerBottom() + EDGE;
+  const maxTop = window.innerHeight - height - EDGE;
+  const left = Math.min(window.innerWidth - width - EDGE, Math.max(EDGE, rect.left - width / 2));
+  const above = rect.top - GAP - height;
+  if (above >= minTop) return { left, top: above, below: false };
+  const below = rect.bottom + GAP;
+  if (below <= maxTop) return { left, top: below, below: true };
+  // The selection fills the screen; keep to the top edge
+  return { left, top: minTop, below: false };
 }
 
 interface FloatingToolbarProps {
@@ -34,56 +63,31 @@ export const FloatingToolbar: React.FC<FloatingToolbarProps> = ({
   const toolbarRef = useRef<HTMLDivElement>(null);
   const wasVisibleRef = useRef(false);
 
-  useEffect(() => {
+  // Positioned in pixels before paint, so the entrance animation's transform
+  // can't shift it back over the text it's meant to sit beside
+  useLayoutEffect(() => {
     const el = toolbarRef.current;
-    if (!el) return;
-
-    if (rect.visible) {
-      const halfWidth = Math.min(180, (window.innerWidth - 16) / 2);
-      const clampedLeft = Math.min(
-        window.innerWidth - halfWidth - 8,
-        Math.max(halfWidth + 8, rect.left)
-      );
-      const clampedTop = Math.max(56, rect.top);
-      if (prefersReducedMotion()) {
-        el.style.left = `${clampedLeft}px`;
-        el.style.top = `${clampedTop}px`;
-        el.style.opacity = '1';
-        wasVisibleRef.current = true;
-        return;
-      }
-
-      if (!wasVisibleRef.current) {
-        gsap.set(el, { left: clampedLeft, top: clampedTop });
-        gsap.fromTo(
-          el,
-          { opacity: 0, scale: 0.95, y: 6 },
-          {
-            opacity: 1,
-            scale: 1,
-            y: 0,
-            duration: 0.18,
-            ease: 'power3.out',
-            overwrite: 'auto',
-          }
-        );
-        wasVisibleRef.current = true;
-      } else {
-        gsap.to(el, {
-          left: clampedLeft,
-          top: clampedTop,
-          opacity: 1,
-          scale: 1,
-          y: 0,
-          duration: 0.16,
-          ease: 'power3.out',
-          overwrite: 'auto',
-        });
-      }
-    } else {
+    if (!el || !rect.visible) {
       wasVisibleRef.current = false;
+      return;
     }
-  }, [rect.visible, rect.left, rect.top]);
+
+    const place = placeToolbar(el, rect);
+    el.style.left = `${place.left}px`;
+    el.style.top = `${place.top}px`;
+    el.style.transformOrigin = place.below ? 'top center' : 'bottom center';
+    // Scrolled out of view: hide rather than pin to an edge
+    el.style.visibility = rect.bottom < 0 || rect.top > window.innerHeight ? 'hidden' : 'visible';
+
+    if (wasVisibleRef.current) return;
+    wasVisibleRef.current = true;
+    if (prefersReducedMotion()) return;
+    gsap.fromTo(
+      el,
+      { opacity: 0, scale: 0.95, y: place.below ? -6 : 6 },
+      { opacity: 1, scale: 1, y: 0, duration: 0.18, ease: 'power3.out', overwrite: 'auto' }
+    );
+  }, [rect]);
 
   if (!rect.visible) return null;
 
@@ -165,10 +169,6 @@ export const FloatingToolbar: React.FC<FloatingToolbarProps> = ({
       role="toolbar"
       aria-label="Text formatting"
       style={{
-        top: `${Math.max(12, rect.top)}px`,
-        left: `${rect.left}px`,
-        transform: 'translate(-50%, -100%)',
-        transformOrigin: 'bottom center',
         boxShadow: 'var(--elevation-floating)',
         backgroundColor: 'var(--bg-elevated)',
         zIndex: 'var(--z-toolbar)',
